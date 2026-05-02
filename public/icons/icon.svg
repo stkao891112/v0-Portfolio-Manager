@@ -1,0 +1,26 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="512" height="512" rx="108" fill="#0a0a0f"/>
+  <rect x="8" y="8" width="496" height="496" rx="100" stroke="url(#gradient)" stroke-width="2" fill="none"/>
+  
+  <!-- Glow effect -->
+  <defs>
+    <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#06b6d4;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0891b2;stop-opacity:0.5" />
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="8" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Wallet icon -->
+  <g transform="translate(128, 128)" filter="url(#glow)">
+    <rect x="16" y="48" width="224" height="176" rx="16" stroke="#06b6d4" stroke-width="12" fill="none"/>
+    <path d="M64 48V32C64 23.1634 71.1634 16 80 16H176C184.837 16 192 23.1634 192 32V48" stroke="#06b6d4" stroke-width="12" stroke-linecap="round"/>
+    <circle cx="192" cy="136" r="20" fill="#06b6d4"/>
+  </g>
+</svg>

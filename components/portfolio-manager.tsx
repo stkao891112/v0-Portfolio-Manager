@@ -1,6 +1,7 @@
 'use client'
 
 import { usePortfolioStore } from '@/lib/portfolio-store'
+import { usePWA } from '@/hooks/use-pwa'
 import { AddCategoryDialog } from './add-category-dialog'
 import { CategoryCard } from './category-card'
 import { PortfolioChart } from './portfolio-chart'
@@ -8,6 +9,7 @@ import { PortfolioSummary } from './portfolio-summary'
 import { Wallet, Sparkles } from 'lucide-react'
 
 export function PortfolioManager() {
+  usePWA()
   const categories = usePortfolioStore((state) => state.categories)
   
   const totalPortfolioValue = categories.reduce(
