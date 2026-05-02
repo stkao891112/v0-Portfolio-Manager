@@ -1,5 +1,11 @@
-import { PortfolioManager } from '@/components/portfolio-manager'
+import { PortfolioManager } from "@/components/portfolio-manager"
+import { ParticleBackground } from "@/components/particle-background"
 
 export default function Home() {
-  return <PortfolioManager />
+  return (
+    <>
+      <ParticleBackground />
+      <PortfolioManager />
+    </>
+  )
 }
