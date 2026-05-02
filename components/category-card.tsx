@@ -20,10 +20,15 @@ export function CategoryCard({ category, totalPortfolioValue }: CategoryCardProp
   const [isEditing, setIsEditing] = useState(false)
   const [editName, setEditName] = useState(category.name)
   
-  const { removeCategory, updateCategory } = usePortfolioStore()
+  const { removeCategory, updateCategory, convertToDisplayCurrency, displayCurrency } = usePortfolioStore()
+  
+  const currencySymbol = displayCurrency === 'USD' ? '$' : 'NT$'
   
   const categoryValue = category.assets.reduce(
-    (sum, asset) => sum + asset.quantity * asset.costPerUnit,
+    (sum, asset) => {
+      const value = asset.quantity * asset.costPerUnit
+      return sum + convertToDisplayCurrency(value, asset.currency || 'USD')
+    },
     0
   )
   const categoryPercent = totalPortfolioValue > 0 
@@ -94,7 +99,7 @@ export function CategoryCard({ category, totalPortfolioValue }: CategoryCardProp
           <div className="flex items-center gap-4">
             <div className="text-right">
               <div className="font-mono text-lg font-semibold text-foreground">
-                ${categoryValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                {currencySymbol}{categoryValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}
               </div>
               <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
                 <span>實際 {categoryPercent.toFixed(1)}%</span>
@@ -147,7 +152,7 @@ export function CategoryCard({ category, totalPortfolioValue }: CategoryCardProp
               <div className="grid grid-cols-12 gap-2 px-3 text-xs font-medium text-muted-foreground">
                 <div className="col-span-2">標的</div>
                 <div className="col-span-2">目標比例</div>
-                <div className="col-span-3">持有數量 × 成本</div>
+                <div className="col-span-3">持有數量 x 成本</div>
                 <div className="col-span-2">現值 / 實際比例</div>
                 <div className="col-span-2">建議調整</div>
                 <div className="col-span-1"></div>

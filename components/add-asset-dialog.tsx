@@ -14,7 +14,15 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
 import { usePortfolioStore } from '@/lib/portfolio-store'
+import { Currency } from '@/lib/portfolio-types'
 
 interface AddAssetDialogProps {
   categoryId: string
@@ -25,14 +33,16 @@ export function AddAssetDialog({ categoryId, categoryName }: AddAssetDialogProps
   const [open, setOpen] = useState(false)
   const [symbol, setSymbol] = useState('')
   const [targetPercent, setTargetPercent] = useState('')
+  const [currency, setCurrency] = useState<Currency>('USD')
   const addAsset = usePortfolioStore((state) => state.addAsset)
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (symbol.trim() && targetPercent) {
-      addAsset(categoryId, symbol.trim(), parseFloat(targetPercent))
+      addAsset(categoryId, symbol.trim(), parseFloat(targetPercent), currency)
       setSymbol('')
       setTargetPercent('')
+      setCurrency('USD')
       setOpen(false)
     }
   }
@@ -82,6 +92,20 @@ export function AddAssetDialog({ categoryId, categoryName }: AddAssetDialogProps
                 max="100"
                 step="0.1"
               />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="currency" className="text-foreground">
+                計價幣種
+              </Label>
+              <Select value={currency} onValueChange={(v) => setCurrency(v as Currency)}>
+                <SelectTrigger className="bg-input/50 border-border/50">
+                  <SelectValue placeholder="選擇幣種" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="USD">USD 美元</SelectItem>
+                  <SelectItem value="TWD">TWD 台幣</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
           </div>
           <DialogFooter>

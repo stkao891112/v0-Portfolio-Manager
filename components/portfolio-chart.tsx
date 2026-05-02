@@ -3,6 +3,7 @@
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Category } from '@/lib/portfolio-types'
+import { usePortfolioStore } from '@/lib/portfolio-store'
 
 interface PortfolioChartProps {
   categories: Category[]
@@ -10,15 +11,22 @@ interface PortfolioChartProps {
 }
 
 export function PortfolioChart({ categories, type }: PortfolioChartProps) {
+  const { displayCurrency, convertToDisplayCurrency } = usePortfolioStore()
+  const currencySymbol = displayCurrency === 'USD' ? '$' : 'NT$'
+
   const data = categories.flatMap((category) =>
-    category.assets.map((asset) => ({
-      name: asset.symbol,
-      value: type === 'actual' 
-        ? asset.quantity * asset.costPerUnit 
-        : asset.targetPercent,
-      color: category.color,
-      category: category.name,
-    }))
+    category.assets.map((asset) => {
+      const originalValue = asset.quantity * asset.costPerUnit
+      const convertedValue = convertToDisplayCurrency(originalValue, asset.currency || 'USD')
+      return {
+        name: asset.symbol,
+        value: type === 'actual' 
+          ? convertedValue 
+          : asset.targetPercent,
+        color: category.color,
+        category: category.name,
+      }
+    })
   ).filter((item) => item.value > 0)
 
   const total = data.reduce((sum, item) => sum + item.value, 0)
@@ -46,7 +54,7 @@ export function PortfolioChart({ categories, type }: PortfolioChartProps) {
         </CardTitle>
         {type === 'actual' && (
           <div className="font-mono text-2xl font-bold text-foreground">
-            ${total.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+            {currencySymbol}{total.toLocaleString(undefined, { maximumFractionDigits: 0 })}
           </div>
         )}
       </CardHeader>
@@ -79,7 +87,7 @@ export function PortfolioChart({ categories, type }: PortfolioChartProps) {
               formatter={(value: number) => {
                 if (type === 'actual') {
                   const percent = (value / total) * 100
-                  return [`$${value.toLocaleString()} (${percent.toFixed(1)}%)`, '']
+                  return [`${currencySymbol}${value.toLocaleString()} (${percent.toFixed(1)}%)`, '']
                 }
                 return [`${value.toFixed(1)}%`, '']
               }}

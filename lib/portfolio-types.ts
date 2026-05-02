@@ -1,9 +1,12 @@
+export type Currency = 'USD' | 'TWD'
+
 export interface Asset {
   id: string
   symbol: string
   targetPercent: number
   quantity: number
   costPerUnit: number
+  currency: Currency
 }
 
 export interface Category {

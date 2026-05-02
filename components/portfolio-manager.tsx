@@ -6,14 +6,18 @@ import { AddCategoryDialog } from './add-category-dialog'
 import { CategoryCard } from './category-card'
 import { PortfolioChart } from './portfolio-chart'
 import { PortfolioSummary } from './portfolio-summary'
+import { CurrencySettings } from './currency-settings'
 import { Wallet, Sparkles } from 'lucide-react'
 
 export function PortfolioManager() {
   usePWA()
-  const categories = usePortfolioStore((state) => state.categories)
+  const { categories, displayCurrency, convertToDisplayCurrency } = usePortfolioStore()
   
   const totalPortfolioValue = categories.reduce(
-    (sum, cat) => sum + cat.assets.reduce((s, a) => s + a.quantity * a.costPerUnit, 0),
+    (sum, cat) => sum + cat.assets.reduce((s, a) => {
+      const value = a.quantity * a.costPerUnit
+      return s + convertToDisplayCurrency(value, a.currency || 'USD')
+    }, 0),
     0
   )
 
@@ -36,7 +40,10 @@ export function PortfolioManager() {
             </div>
           </div>
           
-          <AddCategoryDialog />
+          <div className="flex items-center gap-3">
+            <CurrencySettings />
+            <AddCategoryDialog />
+          </div>
         </div>
       </header>
 
