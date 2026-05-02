@@ -3,14 +3,21 @@
 import { TrendingUp, Layers, Target, AlertTriangle } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Category } from '@/lib/portfolio-types'
+import { usePortfolioStore } from '@/lib/portfolio-store'
 
 interface PortfolioSummaryProps {
   categories: Category[]
 }
 
 export function PortfolioSummary({ categories }: PortfolioSummaryProps) {
+  const { displayCurrency, convertToDisplayCurrency } = usePortfolioStore()
+  const currencySymbol = displayCurrency === 'USD' ? '$' : 'NT$'
+
   const totalValue = categories.reduce(
-    (sum, cat) => sum + cat.assets.reduce((s, a) => s + a.quantity * a.costPerUnit, 0),
+    (sum, cat) => sum + cat.assets.reduce((s, a) => {
+      const value = a.quantity * a.costPerUnit
+      return s + convertToDisplayCurrency(value, a.currency || 'USD')
+    }, 0),
     0
   )
   
@@ -25,7 +32,8 @@ export function PortfolioSummary({ categories }: PortfolioSummaryProps) {
   let maxDeviation = 0
   categories.forEach((cat) => {
     cat.assets.forEach((asset) => {
-      const assetValue = asset.quantity * asset.costPerUnit
+      const assetValueOriginal = asset.quantity * asset.costPerUnit
+      const assetValue = convertToDisplayCurrency(assetValueOriginal, asset.currency || 'USD')
       const actualPercent = totalValue > 0 ? (assetValue / totalValue) * 100 : 0
       const deviation = Math.abs(actualPercent - asset.targetPercent)
       if (deviation > maxDeviation) {
@@ -37,7 +45,7 @@ export function PortfolioSummary({ categories }: PortfolioSummaryProps) {
   const stats = [
     {
       label: '總資產價值',
-      value: `$${totalValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`,
+      value: `${currencySymbol}${totalValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`,
       icon: TrendingUp,
       color: 'text-primary',
       bgColor: 'bg-primary/10',

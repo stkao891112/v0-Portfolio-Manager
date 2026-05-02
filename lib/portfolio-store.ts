@@ -3,22 +3,49 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import { v4 as uuidv4 } from 'uuid'
-import { Category, Asset, getNextColor } from './portfolio-types'
+import { Category, Asset, Currency, getNextColor } from './portfolio-types'
 
 interface PortfolioStore {
   categories: Category[]
+  displayCurrency: Currency
+  exchangeRate: number // 1 USD = X TWD
+  setDisplayCurrency: (currency: Currency) => void
+  setExchangeRate: (rate: number) => void
   addCategory: (name: string) => void
   removeCategory: (id: string) => void
   updateCategory: (id: string, name: string) => void
-  addAsset: (categoryId: string, symbol: string, targetPercent: number) => void
+  addAsset: (categoryId: string, symbol: string, targetPercent: number, currency: Currency) => void
   removeAsset: (categoryId: string, assetId: string) => void
   updateAsset: (categoryId: string, assetId: string, updates: Partial<Asset>) => void
+  convertToDisplayCurrency: (value: number, fromCurrency: Currency) => number
 }
 
 export const usePortfolioStore = create<PortfolioStore>()(
   persist(
     (set, get) => ({
       categories: [],
+      displayCurrency: 'TWD',
+      exchangeRate: 32.5,
+      
+      setDisplayCurrency: (currency: Currency) => {
+        set({ displayCurrency: currency })
+      },
+      
+      setExchangeRate: (rate: number) => {
+        set({ exchangeRate: rate })
+      },
+      
+      convertToDisplayCurrency: (value: number, fromCurrency: Currency) => {
+        const { displayCurrency, exchangeRate } = get()
+        if (fromCurrency === displayCurrency) return value
+        if (fromCurrency === 'USD' && displayCurrency === 'TWD') {
+          return value * exchangeRate
+        }
+        if (fromCurrency === 'TWD' && displayCurrency === 'USD') {
+          return value / exchangeRate
+        }
+        return value
+      },
       
       addCategory: (name: string) => {
         const usedColors = get().categories.map(c => c.color)
@@ -49,7 +76,7 @@ export const usePortfolioStore = create<PortfolioStore>()(
         }))
       },
       
-      addAsset: (categoryId: string, symbol: string, targetPercent: number) => {
+      addAsset: (categoryId: string, symbol: string, targetPercent: number, currency: Currency) => {
         set((state) => ({
           categories: state.categories.map((c) =>
             c.id === categoryId
@@ -63,6 +90,7 @@ export const usePortfolioStore = create<PortfolioStore>()(
                       targetPercent,
                       quantity: 0,
                       costPerUnit: 0,
+                      currency,
                     },
                   ],
                 }
