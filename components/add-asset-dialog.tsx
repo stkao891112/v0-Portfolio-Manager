@@ -23,6 +23,7 @@ import {
 } from '@/components/ui/select'
 import { usePortfolioStore } from '@/lib/portfolio-store'
 import { Currency } from '@/lib/portfolio-types'
+import { toast } from 'sonner'
 
 interface AddAssetDialogProps {
   categoryId: string
@@ -33,15 +34,30 @@ export function AddAssetDialog({ categoryId, categoryName }: AddAssetDialogProps
   const [open, setOpen] = useState(false)
   const [symbol, setSymbol] = useState('')
   const [targetPercent, setTargetPercent] = useState('')
+  const [quantity, setQuantity] = useState('')
+  const [costPerUnit, setCostPerUnit] = useState('')
   const [currency, setCurrency] = useState<Currency>('USD')
   const addAsset = usePortfolioStore((state) => state.addAsset)
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (symbol.trim() && targetPercent) {
-      addAsset(categoryId, symbol.trim(), parseFloat(targetPercent), currency)
+      const formattedSymbol = symbol.trim().toUpperCase()
+      const parsedQuantity = parseFloat(quantity) || 0
+      const parsedCost = parseFloat(costPerUnit) || 0
+      addAsset(
+        categoryId,
+        formattedSymbol,
+        parseFloat(targetPercent),
+        currency,
+        parsedQuantity,
+        parsedCost
+      )
+      toast.success(`已新增標的 ${formattedSymbol}`)
       setSymbol('')
       setTargetPercent('')
+      setQuantity('')
+      setCostPerUnit('')
       setCurrency('USD')
       setOpen(false)
     }
@@ -55,31 +71,48 @@ export function AddAssetDialog({ categoryId, categoryName }: AddAssetDialogProps
           新增標的
         </Button>
       </DialogTrigger>
-      <DialogContent className="border-border/50 bg-card/95 backdrop-blur-xl">
+      <DialogContent className="border-border/50 bg-card/95 backdrop-blur-xl sm:max-w-md">
         <form onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle className="text-foreground">新增投資標的</DialogTitle>
             <DialogDescription className="text-muted-foreground">
-              在「{categoryName}」分類下新增標的與目標比例
+              在「{categoryName}」分類下新增標的與目標配置比例
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-4 py-4">
-            <div className="grid gap-2">
-              <Label htmlFor="symbol" className="text-foreground">
-                標的代號
-              </Label>
-              <Input
-                id="symbol"
-                placeholder="例如：BTC, AAPL, 2330"
-                value={symbol}
-                onChange={(e) => setSymbol(e.target.value)}
-                className="bg-input/50 border-border/50 uppercase"
-                autoFocus
-              />
+          <div className="grid gap-3.5 py-4">
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-2 grid gap-1.5">
+                <Label htmlFor="symbol" className="text-xs text-foreground">
+                  標的代號 *
+                </Label>
+                <Input
+                  id="symbol"
+                  placeholder="例如：BTC, AAPL, 2330"
+                  value={symbol}
+                  onChange={(e) => setSymbol(e.target.value)}
+                  className="bg-input/50 border-border/50 uppercase"
+                  autoFocus
+                />
+              </div>
+              <div className="col-span-1 grid gap-1.5">
+                <Label htmlFor="currency" className="text-xs text-foreground">
+                  幣種
+                </Label>
+                <Select value={currency} onValueChange={(v) => setCurrency(v as Currency)}>
+                  <SelectTrigger className="bg-input/50 border-border/50">
+                    <SelectValue placeholder="選擇幣種" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="USD">USD</SelectItem>
+                    <SelectItem value="TWD">TWD</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="targetPercent" className="text-foreground">
-                目標比例 (%)
+
+            <div className="grid gap-1.5">
+              <Label htmlFor="targetPercent" className="text-xs text-foreground">
+                目標比例 (%) *
               </Label>
               <Input
                 id="targetPercent"
@@ -93,22 +126,41 @@ export function AddAssetDialog({ categoryId, categoryName }: AddAssetDialogProps
                 step="0.1"
               />
             </div>
-            <div className="grid gap-2">
-              <Label htmlFor="currency" className="text-foreground">
-                計價幣種
-              </Label>
-              <Select value={currency} onValueChange={(v) => setCurrency(v as Currency)}>
-                <SelectTrigger className="bg-input/50 border-border/50">
-                  <SelectValue placeholder="選擇幣種" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="USD">USD 美元</SelectItem>
-                  <SelectItem value="TWD">TWD 台幣</SelectItem>
-                </SelectContent>
-              </Select>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="grid gap-1.5">
+                <Label htmlFor="quantity" className="text-xs text-muted-foreground">
+                  持有數量 (選填)
+                </Label>
+                <Input
+                  id="quantity"
+                  type="number"
+                  placeholder="例如：10"
+                  value={quantity}
+                  onChange={(e) => setQuantity(e.target.value)}
+                  className="bg-input/50 border-border/50"
+                  min="0"
+                  step="any"
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="costPerUnit" className="text-xs text-muted-foreground">
+                  成本單價 (選填)
+                </Label>
+                <Input
+                  id="costPerUnit"
+                  type="number"
+                  placeholder={`例如：150`}
+                  value={costPerUnit}
+                  onChange={(e) => setCostPerUnit(e.target.value)}
+                  className="bg-input/50 border-border/50"
+                  min="0"
+                  step="any"
+                />
+              </div>
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className="gap-2 sm:gap-0">
             <Button type="button" variant="outline" onClick={() => setOpen(false)}>
               取消
             </Button>

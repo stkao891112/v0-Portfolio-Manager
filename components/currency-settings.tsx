@@ -23,6 +23,7 @@ import {
 } from '@/components/ui/select'
 import { usePortfolioStore } from '@/lib/portfolio-store'
 import { Currency } from '@/lib/portfolio-types'
+import { toast } from 'sonner'
 
 export function CurrencySettings() {
   const { displayCurrency, exchangeRate, setDisplayCurrency, setExchangeRate } = usePortfolioStore()
@@ -40,7 +41,9 @@ export function CurrencySettings() {
 
   const handleSave = () => {
     setDisplayCurrency(tempCurrency)
-    setExchangeRate(parseFloat(tempRate) || 32.5)
+    const rate = parseFloat(tempRate) || 32.5
+    setExchangeRate(rate)
+    toast.success(`幣種與匯率設定已儲存 (1 USD = ${rate} TWD)`)
     setOpen(false)
   }
 

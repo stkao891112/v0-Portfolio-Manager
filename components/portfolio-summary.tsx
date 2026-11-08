@@ -80,13 +80,13 @@ export function PortfolioSummary({ categories }: PortfolioSummaryProps) {
           key={stat.label}
           className="border-border/40 bg-card/80 backdrop-blur-sm transition-all hover:border-border/60"
         >
-          <CardContent className="flex items-center gap-4 p-4">
-            <div className={`rounded-lg p-2.5 ${stat.bgColor}`}>
-              <stat.icon className={`size-5 ${stat.color}`} />
+          <CardContent className="flex items-center gap-2.5 sm:gap-4 p-3 sm:p-4">
+            <div className={`rounded-lg p-2 sm:p-2.5 shrink-0 ${stat.bgColor}`}>
+              <stat.icon className={`size-4 sm:size-5 ${stat.color}`} />
             </div>
-            <div>
-              <p className="text-xs text-muted-foreground">{stat.label}</p>
-              <p className="font-mono text-xl font-bold text-foreground">
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] sm:text-xs text-muted-foreground truncate">{stat.label}</p>
+              <p className="font-mono text-sm sm:text-xl font-bold text-foreground truncate">
                 {stat.value}
               </p>
             </div>

@@ -14,6 +14,7 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog'
 import { usePortfolioStore } from '@/lib/portfolio-store'
+import { toast } from 'sonner'
 
 export function AddCategoryDialog() {
   const [open, setOpen] = useState(false)
@@ -23,7 +24,9 @@ export function AddCategoryDialog() {
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (name.trim()) {
-      addCategory(name.trim())
+      const categoryName = name.trim()
+      addCategory(categoryName)
+      toast.success(`已建立分類「${categoryName}」`)
       setName('')
       setOpen(false)
     }

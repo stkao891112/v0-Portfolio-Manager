@@ -9,10 +9,14 @@ import { PortfolioSummary } from './portfolio-summary'
 import { CurrencySettings } from './currency-settings'
 import { Wallet, Sparkles } from 'lucide-react'
 
-export function PortfolioManager() {
+interface PortfolioManagerProps {
+  hideHeader?: boolean
+}
+
+export function PortfolioManager({ hideHeader = false }: PortfolioManagerProps) {
   usePWA()
   const { categories, displayCurrency, convertToDisplayCurrency } = usePortfolioStore()
-  
+
   const totalPortfolioValue = categories.reduce(
     (sum, cat) => sum + cat.assets.reduce((s, a) => {
       const value = a.quantity * a.costPerUnit
@@ -22,30 +26,32 @@ export function PortfolioManager() {
   )
 
   return (
-    <div className="relative z-10 min-h-screen">
+    <div className={hideHeader ? "relative z-10" : "relative z-10 min-h-screen"}>
       {/* Header */}
-      <header className="sticky top-0 z-50 border-b border-border/40 bg-background/80 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4">
-          <div className="flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center rounded-xl bg-primary/10 glow-primary">
-              <Wallet className="size-5 text-primary" />
+      {!hideHeader && (
+        <header className="sticky top-0 z-50 border-b border-border/40 bg-background/80 backdrop-blur-xl">
+          <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4">
+            <div className="flex items-center gap-3">
+              <div className="flex size-10 items-center justify-center rounded-xl bg-primary/10 glow-primary">
+                <Wallet className="size-5 text-primary" />
+              </div>
+              <div>
+                <h1 className="text-lg font-bold text-foreground">
+                  Portfolio Manager
+                </h1>
+                <p className="text-xs text-muted-foreground">
+                  投資組合配置整理器
+                </p>
+              </div>
             </div>
-            <div>
-              <h1 className="text-lg font-bold text-foreground">
-                Portfolio Manager
-              </h1>
-              <p className="text-xs text-muted-foreground">
-                投資組合配置整理器
-              </p>
+
+            <div className="flex items-center gap-3">
+              <CurrencySettings />
+              <AddCategoryDialog />
             </div>
           </div>
-          
-          <div className="flex items-center gap-3">
-            <CurrencySettings />
-            <AddCategoryDialog />
-          </div>
-        </div>
-      </header>
+        </header>
+      )}
 
       {/* Main Content */}
       <main className="mx-auto max-w-7xl px-4 py-8">
