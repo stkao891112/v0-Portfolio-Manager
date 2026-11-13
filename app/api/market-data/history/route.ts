@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { defaultMarketProvider } from '@/lib/market-data/yahoo-provider'
+import { marketService } from '@/lib/market-data/market-service'
 import { ensureTablesExist } from '@/lib/db/init'
 
 export async function GET(request: Request) {
@@ -9,7 +9,7 @@ export async function GET(request: Request) {
     const symbol = searchParams.get('symbol') || 'SOXX'
     const weeks = parseInt(searchParams.get('weeks') || '104', 10)
 
-    const bars = await defaultMarketProvider.getWeeklyBars(symbol, weeks)
+    const bars = await marketService.getWeeklyBars(symbol, weeks)
 
     return NextResponse.json({
       symbol,

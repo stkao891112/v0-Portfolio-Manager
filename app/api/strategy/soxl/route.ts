@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { marketService } from '@/lib/market-data/market-service'
 import { analyzeSoxxIndicators } from '@/lib/strategies/indicators'
-import { evaluateSoxxSniperStrategy } from '@/lib/strategies/soxl-engine'
+import { evaluateSoxlSniperStrategy } from '@/lib/strategies/soxl-engine'
 import { sqlite } from '@/lib/db/client'
 import { ensureTablesExist } from '@/lib/db/init'
 import { v4 as uuidv4 } from 'uuid'
@@ -60,7 +60,7 @@ export async function GET() {
     }
 
     // 5. Run strategy engine
-    const strategyState = evaluateSoxxSniperStrategy({
+    const strategyState = evaluateSoxlSniperStrategy({
       analysis: indicators,
       soxlQuote,
       totalPortfolioValue,

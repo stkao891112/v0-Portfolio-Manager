@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { defaultMarketProvider } from '@/lib/market-data/yahoo-provider'
+import { marketService } from '@/lib/market-data/market-service'
 import { sqlite } from '@/lib/db/client'
 import { ensureTablesExist } from '@/lib/db/init'
 
@@ -14,7 +14,7 @@ export async function GET(request: Request) {
     }
 
     const symbols = symbolsParam.split(',').map((s) => s.trim().toUpperCase()).filter(Boolean)
-    const quotes = await defaultMarketProvider.getQuotes(symbols)
+    const quotes = await marketService.getQuotes(symbols)
 
     // Save to SQLite cache and update asset prices
     const now = new Date().toISOString()

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { evaluateSoxxSniperStrategy } from '../lib/strategies/soxl-engine'
+import { evaluateSoxlSniperStrategy } from '../lib/strategies/soxl-engine'
 import { SoxxIndicatorAnalysis } from '../lib/strategies/indicators'
 import { Quote } from '../lib/market-data/provider-interface'
 
@@ -35,7 +35,7 @@ describe('SOXL Sniper Strategy State Machine Tests', () => {
   }
 
   it('should remain in WAIT state when drawdown is above -40%', () => {
-    const state = evaluateSoxxSniperStrategy({
+    const state = evaluateSoxlSniperStrategy({
       analysis: baseAnalysis,
       soxlQuote: mockSoxlQuote,
       totalPortfolioValue: 100000,
@@ -56,7 +56,7 @@ describe('SOXL Sniper Strategy State Machine Tests', () => {
       marketPhase: 'DEEP_BEAR',
     }
 
-    const state = evaluateSoxxSniperStrategy({
+    const state = evaluateSoxlSniperStrategy({
       analysis: analysisTranche1,
       soxlQuote: mockSoxlQuote,
       totalPortfolioValue: 100000,
@@ -71,7 +71,7 @@ describe('SOXL Sniper Strategy State Machine Tests', () => {
   })
 
   it('should trigger Tier 1 profit taking when SOXL return >= +80%', () => {
-    const state = evaluateSoxxSniperStrategy({
+    const state = evaluateSoxlSniperStrategy({
       analysis: baseAnalysis,
       soxlQuote: { ...mockSoxlQuote, price: 54.0 }, // cost was 30 -> +80%
       totalPortfolioValue: 100000,
@@ -86,7 +86,7 @@ describe('SOXL Sniper Strategy State Machine Tests', () => {
   })
 
   it('should trigger warning when SOXX is below 40W MA for two consecutive confirmed weeks', () => {
-    const state = evaluateSoxxSniperStrategy({
+    const state = evaluateSoxlSniperStrategy({
       analysis: { ...baseAnalysis, isBelow40wTwoWeeks: true },
       soxlQuote: mockSoxlQuote,
       totalPortfolioValue: 100000,
@@ -100,7 +100,7 @@ describe('SOXL Sniper Strategy State Machine Tests', () => {
   })
 
   it('should flag risk violation if SOXL position exceeds 5% of portfolio', () => {
-    const state = evaluateSoxxSniperStrategy({
+    const state = evaluateSoxlSniperStrategy({
       analysis: baseAnalysis,
       soxlQuote: mockSoxlQuote, // $30
       totalPortfolioValue: 100000,
