@@ -5,7 +5,7 @@ import { ensureTablesExist } from '@/lib/db/init'
 
 export async function GET() {
   try {
-    ensureTablesExist()
+    await ensureTablesExist()
 
     // 1. Fetch live quotes for BTC and MSTR
     const [btcQuote, mstrQuote] = await Promise.all([
@@ -14,9 +14,9 @@ export async function GET() {
     ])
 
     // 2. Fetch strategy settings
-    const settingRow = sqlite
-      .prepare("SELECT config_json FROM strategy_settings WHERE id = 'btc_mstr'")
-      .get() as any
+    const settingRow = await sqlite.get<any>(
+      "SELECT config_json FROM strategy_settings WHERE id = 'btc_mstr'"
+    )
 
     const config = settingRow
       ? JSON.parse(settingRow.config_json)
@@ -36,9 +36,11 @@ export async function GET() {
     // 3. Ratio calculation
     const mstrBtcRatio = btcQuote.price > 0 ? mstrQuote.price / btcQuote.price : 0
 
-    // 4. Actual holdings from SQLite
-    const btcAsset = sqlite.prepare("SELECT * FROM assets WHERE symbol = 'BTC'").get() as any
-    const mstrAsset = sqlite.prepare("SELECT * FROM assets WHERE symbol = 'MSTR'").get() as any
+    // 4. Actual holdings from database
+    const [btcAsset, mstrAsset] = await Promise.all([
+      sqlite.get<any>("SELECT * FROM assets WHERE symbol = 'BTC'"),
+      sqlite.get<any>("SELECT * FROM assets WHERE symbol = 'MSTR'"),
+    ])
 
     const btcQty = btcAsset ? btcAsset.quantity : 0
     const mstrQty = mstrAsset ? mstrAsset.quantity : 0
@@ -81,7 +83,7 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    ensureTablesExist()
+    await ensureTablesExist()
     const body = await request.json()
     const { phase } = body
 
@@ -89,17 +91,18 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Phase is required' }, { status: 400 })
     }
 
-    const settingRow = sqlite
-      .prepare("SELECT config_json FROM strategy_settings WHERE id = 'btc_mstr'")
-      .get() as any
+    const settingRow = await sqlite.get<any>(
+      "SELECT config_json FROM strategy_settings WHERE id = 'btc_mstr'"
+    )
 
     const config = settingRow ? JSON.parse(settingRow.config_json) : {}
     config.currentPhase = phase
 
     const now = new Date().toISOString()
-    sqlite.prepare(`
-      UPDATE strategy_settings SET config_json = ?, updated_at = ? WHERE id = 'btc_mstr'
-    `).run(JSON.stringify(config), now)
+    await sqlite.run(
+      "UPDATE strategy_settings SET config_json = ?, updated_at = ? WHERE id = 'btc_mstr'",
+      [JSON.stringify(config), now]
+    )
 
     return NextResponse.json({ success: true, updatedPhase: phase })
   } catch (error: any) {

@@ -1,13 +1,14 @@
 import { NextResponse } from 'next/server'
-import { db, sqlite } from '@/lib/db/client'
+import { getDb, sqlite } from '@/lib/db/client'
 import { categories, assets, portfolioSettings } from '@/lib/db/schema'
 import { ensureTablesExist, seedDefaultPortfolioIfEmpty } from '@/lib/db/init'
-import { eq, asc } from 'drizzle-orm'
+import { asc } from 'drizzle-orm'
 
 export async function GET() {
   try {
-    ensureTablesExist()
-    seedDefaultPortfolioIfEmpty()
+    await ensureTablesExist()
+    await seedDefaultPortfolioIfEmpty()
+    const db = getDb()
 
     const settingsList = await db.select().from(portfolioSettings).limit(1)
     const settings = settingsList[0] || {
@@ -83,23 +84,26 @@ export async function GET() {
 
 export async function PUT(request: Request) {
   try {
-    ensureTablesExist()
+    await ensureTablesExist()
     const body = await request.json()
     const now = new Date().toISOString()
 
-    sqlite.prepare(`
+    await sqlite.run(
+      `
       INSERT OR REPLACE INTO portfolio_settings (
         id, display_currency, exchange_rate, monthly_investment_amount,
         emergency_fund_amount, soxl_reserve_target_percent, soxl_max_position_percent, updated_at
       ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      body.displayCurrency || 'TWD',
-      body.exchangeRate ?? 32.5,
-      body.monthlyInvestmentAmount ?? 20000,
-      body.emergencyFundAmount ?? 0,
-      body.soxlReserveTargetPercent ?? 10.0,
-      body.soxlMaxPositionPercent ?? 5.0,
-      now
+    `,
+      [
+        body.displayCurrency || 'TWD',
+        body.exchangeRate ?? 32.5,
+        body.monthlyInvestmentAmount ?? 20000,
+        body.emergencyFundAmount ?? 0,
+        body.soxlReserveTargetPercent ?? 10.0,
+        body.soxlMaxPositionPercent ?? 5.0,
+        now,
+      ]
     )
 
     return NextResponse.json({ success: true })

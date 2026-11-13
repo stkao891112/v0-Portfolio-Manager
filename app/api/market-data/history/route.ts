@@ -4,7 +4,7 @@ import { ensureTablesExist } from '@/lib/db/init'
 
 export async function GET(request: Request) {
   try {
-    ensureTablesExist()
+    await ensureTablesExist()
     const { searchParams } = new URL(request.url)
     const symbol = searchParams.get('symbol') || 'SOXX'
     const weeks = parseInt(searchParams.get('weeks') || '104', 10)

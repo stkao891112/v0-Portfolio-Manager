@@ -19,11 +19,11 @@ export class MarketService {
   }
 
   async getQuote(symbol: string, maxAgeSeconds = 60): Promise<Quote> {
-    ensureTablesExist()
+    await ensureTablesExist()
     const sym = symbol.toUpperCase()
 
-    // 1. Check local SQLite cache
-    const cached = sqlite.prepare('SELECT * FROM market_prices WHERE symbol = ?').get(sym) as any
+    // 1. Check database cache
+    const cached = await sqlite.get<any>('SELECT * FROM market_prices WHERE symbol = ?', [sym])
 
     if (cached) {
       const cachedTime = new Date(cached.timestamp).getTime()
@@ -48,24 +48,30 @@ export class MarketService {
       const fresh = await this.provider.getQuote(sym)
       const now = new Date().toISOString()
 
-      // Save to SQLite market_prices
-      sqlite.prepare(`
-        INSERT INTO market_prices (id, symbol, price, change_24h, volume, is_stale, timestamp)
-        VALUES (?, ?, ?, ?, ?, 0, ?)
-        ON CONFLICT(symbol) DO UPDATE SET
-          price = excluded.price,
-          change_24h = excluded.change_24h,
-          volume = excluded.volume,
-          is_stale = 0,
-          timestamp = excluded.timestamp
-      `).run(sym, sym, fresh.price, fresh.change, fresh.volume, now)
-
-      // Also update assets table currentPrice
-      sqlite.prepare(`
-        UPDATE assets
-        SET current_price = ?, price_updated_at = ?, updated_at = ?
-        WHERE symbol = ?
-      `).run(fresh.price, now, now, sym)
+      // Save to market_prices cache and update assets table currentPrice
+      await sqlite.batch([
+        {
+          sql: `
+            INSERT INTO market_prices (id, symbol, price, change_24h, volume, is_stale, timestamp)
+            VALUES (?, ?, ?, ?, ?, 0, ?)
+            ON CONFLICT(symbol) DO UPDATE SET
+              price = excluded.price,
+              change_24h = excluded.change_24h,
+              volume = excluded.volume,
+              is_stale = 0,
+              timestamp = excluded.timestamp
+          `,
+          args: [sym, sym, fresh.price, fresh.change, fresh.volume, now],
+        },
+        {
+          sql: `
+            UPDATE assets
+            SET current_price = ?, price_updated_at = ?, updated_at = ?
+            WHERE symbol = ?
+          `,
+          args: [fresh.price, now, now, sym],
+        },
+      ])
 
       return fresh
     } catch (err) {
@@ -101,7 +107,7 @@ export class MarketService {
   }
 
   async getWeeklyBars(symbol: string, lookbackWeeks = 104): Promise<PriceBar[]> {
-    ensureTablesExist()
+    await ensureTablesExist()
     const sym = symbol.toUpperCase()
     const endDate = new Date()
     const startDate = new Date()

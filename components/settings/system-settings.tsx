@@ -47,7 +47,7 @@ export function SystemSettings() {
         }),
       })
       if (res.ok) {
-        toast.success('系統設定已成功儲存至 SQLite 資料庫')
+        toast.success('系統設定已成功儲存至資料庫')
       } else {
         toast.error('儲存失敗')
       }
@@ -75,7 +75,7 @@ export function SystemSettings() {
       }
 
       const confirmed = window.confirm(
-        `偵測到舊版 LocalStorage 內有 ${categories.length} 個分類，是否立即遷移並覆寫至 SQLite 本機資料庫？`
+        `偵測到舊版 LocalStorage 內有 ${categories.length} 個分類，是否立即遷移並覆寫至資料庫？`
       )
       if (!confirmed) return
 
@@ -92,7 +92,7 @@ export function SystemSettings() {
       const result = await res.json()
       if (res.ok) {
         toast.success('成功遷移資料！請重新整理頁面以查看最新資產')
-        setMigrationStatus(`已成功遷移 ${result.migratedCategories} 個分類至 SQLite`)
+        setMigrationStatus(`已成功遷移 ${result.migratedCategories} 個分類至資料庫`)
       } else {
         toast.error(`遷移失敗: ${result.error}`)
       }
@@ -106,10 +106,10 @@ export function SystemSettings() {
       <div className="border-b border-border/40 pb-4">
         <h2 className="text-xl font-bold text-foreground flex items-center gap-2">
           <Settings className="size-5 text-primary" />
-          系統參數與本機資料庫設定
+          系統參數與資料庫設定
         </h2>
         <p className="text-xs text-muted-foreground mt-1">
-          所有設定與個人投資資料均安全儲存在本機 SQLite 資料庫（./data/portfolio.db），完全不外傳雲端。
+          所有設定與個人投資資料儲存在 Turso 雲端資料庫（與 SQLite 相容），電腦與手機看到的是同一份資料；本機未設定雲端資料庫時，改存在 ./data/portfolio.db。
         </p>
       </div>
 
@@ -190,26 +190,26 @@ export function SystemSettings() {
             <CardHeader className="pb-3 border-b border-border/30">
               <CardTitle className="text-base font-semibold text-foreground flex items-center gap-2">
                 <Database className="size-4 text-emerald-400" />
-                本機 SQLite 資料庫狀態
+                資料庫狀態
               </CardTitle>
             </CardHeader>
             <CardContent className="pt-4 space-y-3 text-xs">
               <div className="flex items-center justify-between p-2.5 rounded-lg border border-border/40 bg-background/50">
                 <span className="text-muted-foreground">資料庫驅動與引擎</span>
                 <Badge variant="outline" className="border-emerald-500/40 text-emerald-400">
-                  better-sqlite3 + Drizzle ORM
+                  Turso (libSQL) + Drizzle ORM
                 </Badge>
               </div>
 
               <div className="flex items-center justify-between p-2.5 rounded-lg border border-border/40 bg-background/50">
-                <span className="text-muted-foreground">資料庫實體檔案位置</span>
-                <span className="font-mono text-[11px] text-foreground">./data/portfolio.db</span>
+                <span className="text-muted-foreground">資料儲存位置</span>
+                <span className="font-mono text-[11px] text-foreground">Turso 雲端（本機未設定時為 ./data/portfolio.db）</span>
               </div>
 
               <div className="p-3 rounded-lg border border-border/40 bg-background/50 space-y-1.5">
                 <span className="font-semibold text-foreground">一鍵備份說明</span>
                 <p className="text-muted-foreground leading-relaxed">
-                  系統提供 <code>backup.bat</code> 腳本，執行時會自動將 <code>portfolio.db</code> 複製並打上時間戳記備份至 <code>./data/backups/</code>。
+                  雲端資料庫的備份請到 Turso 後台處理；<code>backup.bat</code> 只會備份本機模式使用的 <code>portfolio.db</code>（複製並打上時間戳記至 <code>./data/backups/</code>）。
                 </p>
               </div>
             </CardContent>
@@ -224,7 +224,7 @@ export function SystemSettings() {
             </CardHeader>
             <CardContent className="pt-4 space-y-3 text-xs">
               <p className="text-muted-foreground leading-relaxed">
-                若您在升級前已在瀏覽器 LocalStorage 建立過資產，點擊下方按鈕可將其一鍵無損匯入 SQLite 本機資料庫。
+                若您在升級前已在瀏覽器 LocalStorage 建立過資產，點擊下方按鈕可將其一鍵無損匯入資料庫。
               </p>
               <Button
                 variant="outline"

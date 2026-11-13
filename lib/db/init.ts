@@ -1,8 +1,20 @@
-import { sqlite } from './client'
-import { v4 as uuidv4 } from 'uuid'
+import { sqlite, type Statement } from './client'
 
-export function ensureTablesExist() {
-  sqlite.exec(`
+// 同一個執行環境只建表一次（雲端資料庫每次查詢都要走網路，避免重複送出建表指令）
+let tablesReady: Promise<void> | null = null
+
+export function ensureTablesExist(): Promise<void> {
+  if (!tablesReady) {
+    tablesReady = createTables().catch((err) => {
+      tablesReady = null
+      throw err
+    })
+  }
+  return tablesReady
+}
+
+async function createTables(): Promise<void> {
+  await sqlite.exec(`
     CREATE TABLE IF NOT EXISTS portfolio_settings (
       id TEXT PRIMARY KEY,
       display_currency TEXT NOT NULL DEFAULT 'TWD',
@@ -108,24 +120,40 @@ export function ensureTablesExist() {
   `)
 }
 
-export function seedDefaultPortfolioIfEmpty() {
-  ensureTablesExist()
+// 同一個執行環境同時有多個請求時，只跑一次預設資料建立
+let seeding: Promise<boolean> | null = null
+
+export function seedDefaultPortfolioIfEmpty(): Promise<boolean> {
+  if (!seeding) {
+    seeding = seedIfEmpty().finally(() => {
+      seeding = null
+    })
+  }
+  return seeding
+}
+
+async function seedIfEmpty(): Promise<boolean> {
+  await ensureTablesExist()
 
   // Check if categories already exist
-  const existingCount = sqlite.prepare('SELECT count(*) as count FROM categories').get() as { count: number }
-  if (existingCount.count > 0) {
+  const existing = await sqlite.get<{ count: number }>('SELECT count(*) as count FROM categories')
+  if (Number(existing?.count ?? 0) > 0) {
     return false // Already initialized
   }
 
   const now = new Date().toISOString()
+  const statements: Statement[] = []
 
   // 1. Seed portfolio_settings
-  sqlite.prepare(`
-    INSERT OR REPLACE INTO portfolio_settings (
-      id, display_currency, exchange_rate, monthly_investment_amount,
-      emergency_fund_amount, soxl_reserve_target_percent, soxl_max_position_percent, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run('default', 'TWD', 32.5, 20000, 0, 10.0, 5.0, now)
+  statements.push({
+    sql: `
+      INSERT OR REPLACE INTO portfolio_settings (
+        id, display_currency, exchange_rate, monthly_investment_amount,
+        emergency_fund_amount, soxl_reserve_target_percent, soxl_max_position_percent, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    args: ['default', 'TWD', 32.5, 20000, 0, 10.0, 5.0, now],
+  })
 
   // 2. Seed default categories and assets according to user/ChatGPT blueprint
   const defaultBlueprint = [
@@ -179,33 +207,44 @@ export function seedDefaultPortfolioIfEmpty() {
     },
   ]
 
-  const insertCategory = sqlite.prepare(`
-    INSERT INTO categories (id, name, color, sort_order, target_percent, created_at, updated_at)
+  // 預設資料使用固定 ID + INSERT OR IGNORE：就算兩個請求同時建立，也不會產生重複的類別
+  const insertCategorySql = `
+    INSERT OR IGNORE INTO categories (id, name, color, sort_order, target_percent, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `)
+  `
 
-  const insertAsset = sqlite.prepare(`
-    INSERT INTO assets (id, category_id, symbol, name, target_percent, quantity, cost_per_unit, currency, created_at, updated_at)
+  const insertAssetSql = `
+    INSERT OR IGNORE INTO assets (id, category_id, symbol, name, target_percent, quantity, cost_per_unit, currency, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `)
+  `
 
   for (const cat of defaultBlueprint) {
-    const catId = uuidv4()
-    insertCategory.run(catId, cat.name, cat.color, cat.sortOrder, cat.targetPercent, now, now)
+    const catId = `seed-cat-${cat.sortOrder}`
+    statements.push({
+      sql: insertCategorySql,
+      args: [catId, cat.name, cat.color, cat.sortOrder, cat.targetPercent, now, now],
+    })
 
     for (const a of cat.assets) {
-      const assetId = uuidv4()
-      insertAsset.run(assetId, catId, a.symbol, a.name, a.targetPercent, 0, 0, a.currency, now, now)
+      const assetId = `seed-asset-${a.symbol.toLowerCase().replace(/[^a-z0-9]/g, '')}`
+      statements.push({
+        sql: insertAssetSql,
+        args: [assetId, catId, a.symbol, a.name, a.targetPercent, 0, 0, a.currency, now, now],
+      })
     }
   }
 
   // 3. Seed Strategy Settings
-  const insertStrategySetting = sqlite.prepare(`
+  const insertStrategySettingSql = `
     INSERT OR REPLACE INTO strategy_settings (id, strategy_name, config_json, updated_at)
     VALUES (?, ?, ?, ?)
-  `)
+  `
 
-  insertStrategySetting.run(
+  const insertStrategySetting = (...args: [string, string, string, string]) => {
+    statements.push({ sql: insertStrategySettingSql, args })
+  }
+
+  insertStrategySetting(
     'soxl_sniper',
     'SOXL 熊市狙擊策略',
     JSON.stringify({
@@ -227,7 +266,7 @@ export function seedDefaultPortfolioIfEmpty() {
     now
   )
 
-  insertStrategySetting.run(
+  insertStrategySetting(
     'btc_mstr',
     'BTC/MSTR 週期輪動策略',
     JSON.stringify({
@@ -242,5 +281,7 @@ export function seedDefaultPortfolioIfEmpty() {
     now
   )
 
+  // 全部一次寫入（全部成功或全部不生效）
+  await sqlite.batch(statements)
   return true
 }
