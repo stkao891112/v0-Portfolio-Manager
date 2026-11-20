@@ -1,6 +1,19 @@
 'use client'
 
 import React from 'react'
+import useSWR from 'swr'
+
+// 首頁的策略摘要直接讀兩個策略頁的即時結論（每分鐘更新），不再寫死文字
+const swrFetcher = (url: string) => fetch(url).then((r) => (r.ok ? r.json() : null))
+const SIGNAL_BADGE: Record<string, string> = {
+  BUY_CANDIDATE: '可加碼',
+  MANUAL_REVIEW_REQUIRED: '需人工判斷',
+  SELL_CANDIDATE: '停利減碼',
+  WARNING: '注意／不買',
+  HOLD: '持有中',
+  WAIT: '等待中',
+  DATA_STALE: '資料過期',
+}
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import {
@@ -29,6 +42,10 @@ export function OverviewDashboard({
   exchangeRate,
   onNavigateTab,
 }: OverviewDashboardProps) {
+  const { data: soxl } = useSWR('/api/strategy/soxl', swrFetcher, { refreshInterval: 60_000 })
+  const { data: btc } = useSWR('/api/strategy/btc', swrFetcher, { refreshInterval: 60_000 })
+  const soxlSignal = soxl?.strategyState?.activeSignal
+  const btcMain = btc?.allocation?.decisions?.find((d: any) => d.light !== 'gray') ?? btc?.allocation?.decisions?.[0]
   // Calculate aggregate metrics
   let totalCost = 0
   let totalValue = 0
@@ -89,10 +106,10 @@ export function OverviewDashboard({
               <span className="text-xs text-muted-foreground">本機行情引擎運作中</span>
             </div>
             <h2 className="text-lg font-bold text-foreground">
-              SOXX 處於週期高點觀察區，SOXL 尚未觸發第 1 批次進場條件 (-40%)
+              {soxlSignal ? `SOXL：${soxlSignal.title}` : '正在讀取 SOXL 策略狀態…'}
             </h2>
             <p className="text-xs text-muted-foreground">
-              目前 SOXL 機會預備金累積中（維持現金緩衝），等待深度回撤與確認止跌訊號。
+              {soxlSignal?.suggestedAction ?? ''}
             </p>
           </div>
           <button
@@ -170,7 +187,7 @@ export function OverviewDashboard({
               {soxlActualPercent.toFixed(1)}% / {soxlReserveTarget}%
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              SOXL 持倉上限: 5% (目前持倉: 0%)
+              SOXL 持倉上限 10%（目前持倉 {(soxl?.strategyState?.soxlPortfolioWeightPercent ?? 0).toFixed(1)}%）
             </p>
           </CardContent>
         </Card>
@@ -182,9 +199,11 @@ export function OverviewDashboard({
             <Coins className="size-4 text-indigo-400" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-foreground">牛市中期</div>
+            <div className="text-2xl font-bold text-foreground">{btc?.cycle?.phaseInfo?.label ?? '讀取中'}</div>
             <p className="text-xs text-muted-foreground mt-1">
-              建議配置: MSTR 50% / BTC 50%
+              {btc?.allocation
+                ? `週期分數 ${Math.round(btc.cycle.score)}｜建議 MSTR ${Math.round(btc.allocation.targetMstrShare)}% / BTC ${Math.round(btc.allocation.targetBtcShare)}%`
+                : ''}
             </p>
           </CardContent>
         </Card>
@@ -209,20 +228,22 @@ export function OverviewDashboard({
             <div className="rounded-lg border border-border/40 bg-background/50 p-3 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-sm text-foreground">SOXL 熊市狙擊訊號</span>
-                <Badge variant="secondary" className="text-xs">等待中 (WAIT)</Badge>
+                <Badge variant="secondary" className="text-xs">
+                  {soxlSignal ? SIGNAL_BADGE[soxlSignal.type] ?? soxlSignal.type : '讀取中'}
+                </Badge>
               </div>
               <p className="text-xs text-muted-foreground">
-                SOXX 週線回撤未達 -40% 門檻。四批次進場條件皆處於等待狀態，無任何強制進場動作。
+                {soxlSignal ? `${soxlSignal.title}。${soxlSignal.reason}` : ''}
               </p>
             </div>
 
             <div className="rounded-lg border border-border/40 bg-background/50 p-3 space-y-2">
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-sm text-foreground">BTC / MSTR 輪動訊號</span>
-                <Badge variant="secondary" className="text-xs">維持持倉 (HOLD)</Badge>
+                <Badge variant="secondary" className="text-xs">{btc?.cycle?.phaseInfo?.label ?? '讀取中'}</Badge>
               </div>
               <p className="text-xs text-muted-foreground">
-                目前市場週期設定為【牛市中期】，建議配置各 50%，偏離度在安全範圍（±5%）內。
+                {btcMain ? `${btcMain.title}。${btcMain.detail}` : ''}
               </p>
             </div>
 

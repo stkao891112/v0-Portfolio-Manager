@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
+import { useDbMode, DB_LABEL } from '@/hooks/use-db-mode'
 import { MainNav, NavTab } from '@/components/navigation/main-nav'
 import { OverviewDashboard } from '@/components/dashboard/overview-dashboard'
 import { PortfolioManager } from '@/components/portfolio-manager'
@@ -15,6 +16,7 @@ import { usePortfolioStore } from '@/lib/portfolio-store'
 import { ShieldCheck, Terminal } from 'lucide-react'
 
 export default function Home() {
+  const dbMode = useDbMode()
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard')
   const { categories, displayCurrency, exchangeRate, syncWithDatabase, isDbConnected } = usePortfolioStore()
 
@@ -91,7 +93,7 @@ export default function Home() {
       {/* Footer */}
       <footer className="relative z-10 border-t border-border/40 py-6 text-center text-xs text-muted-foreground">
         <p>
-          Claude 投資決策系統 • 所有資料均儲存於本機 SQLite (./data/portfolio.db) • 決策規則經程式明確判定，絕無隨機臆測
+          Claude 投資決策系統 • {dbMode ? DB_LABEL[dbMode].long : '資料庫連線中'} • 決策規則經程式明確判定，絕無隨機臆測
         </p>
       </footer>
     </div>

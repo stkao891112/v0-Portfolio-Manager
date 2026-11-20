@@ -114,6 +114,28 @@ export async function GET() {
     }
 
     // Executed tranches from transactions table
+    // 本次持倉週期：從「上次持股歸零」之後開始累計買進與賣出股數（停利階梯判斷用）
+    const allTx = await sqlite.all<any>(
+      "SELECT type, quantity FROM transactions WHERE symbol = 'SOXL' AND type IN ('BUY','SELL') ORDER BY date, created_at"
+    )
+    let runQty = 0
+    let cycleBoughtQty = 0
+    let cycleSoldQty = 0
+    for (const tx of allTx) {
+      const q = Number(tx.quantity) || 0
+      if (tx.type === 'BUY') {
+        if (runQty <= 0) {
+          cycleBoughtQty = 0
+          cycleSoldQty = 0
+        }
+        runQty += q
+        cycleBoughtQty += q
+      } else {
+        runQty = Math.max(0, runQty - q)
+        cycleSoldQty += q
+      }
+    }
+
     // 備註格式為「第 1 批」或「第1批」都要認得
     const executedTranches: number[] = []
     for (const row of executedRows) {
@@ -132,6 +154,8 @@ export async function GET() {
       executedTranches,
       maxDrawdownSincePeak,
       sniperActivatedAt,
+      cycleBoughtQty,
+      cycleSoldQty,
       macroVerdict: macro.verdict,
       soxxStale: soxxQuote.isStale || allBars.length === 0 || soxxDaily.stale,
       macroStale: [tnx, irx, vix, hyg, ief, unemp, tsmc].some((x) => x.stale),

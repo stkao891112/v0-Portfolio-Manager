@@ -83,7 +83,7 @@ describe('SOXL Sniper Strategy State Machine Tests', () => {
 
     expect(state.activeSignal.type).toBe('SELL_CANDIDATE')
     expect(state.exitAlerts.tier1Profit80).toBe(true)
-    expect(state.activeSignal.suggestedAction).toContain('賣出目前 SOXL 持倉的 1/3')
+    expect(state.activeSignal.suggestedAction).toContain('建倉總量 100 股的 1/3')
   })
 
   it('should trigger warning when SOXX is below 40W MA for two consecutive confirmed weeks', () => {
@@ -218,5 +218,37 @@ describe('SOXL Sniper Strategy State Machine Tests', () => {
     })
     expect(state.tranches.slice(0, 3).every((t) => t.status === 'CANDIDATE')).toBe(true)
     expect(state.tranches[3].status).toBe('WAITING')
+  })
+
+  it('停利：賣過 1/3 後，+80% 階梯不再重複出現', () => {
+    const common = {
+      analysis: baseAnalysis,
+      soxlQuote: { ...mockSoxlQuote, price: 60 },
+      totalPortfolioValue: 1000000,
+      soxlCostBasis: 30, // +100%
+      cashAvailable: 10000,
+    }
+    const before = evaluateSoxlSniperStrategy({ ...common, soxlQuantity: 300, cycleBoughtQty: 300, cycleSoldQty: 0 })
+    expect(before.activeSignal.title).toContain('第 1 批出場')
+    expect(before.activeSignal.suggestedAction).toContain('100 股')
+
+    const after = evaluateSoxlSniperStrategy({ ...common, soxlQuantity: 200, cycleBoughtQty: 300, cycleSoldQty: 100 })
+    expect(after.exitAlerts.tier1Profit80).toBe(false)
+    expect(after.activeSignal.type).not.toBe('SELL_CANDIDATE')
+  })
+
+  it('停利：賣過 1/3 後到 +150%，只提示再賣到 2/3', () => {
+    const state = evaluateSoxlSniperStrategy({
+      analysis: baseAnalysis,
+      soxlQuote: { ...mockSoxlQuote, price: 80 }, // 成本 30 → +167%
+      totalPortfolioValue: 1000000,
+      soxlQuantity: 200,
+      soxlCostBasis: 30,
+      cashAvailable: 10000,
+      cycleBoughtQty: 300,
+      cycleSoldQty: 100,
+    })
+    expect(state.activeSignal.title).toContain('第 2 批出場')
+    expect(state.activeSignal.suggestedAction).toContain('100 股')
   })
 })

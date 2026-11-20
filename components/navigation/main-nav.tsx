@@ -1,6 +1,7 @@
 'use client'
 
 import React from 'react'
+import { useDbMode, DB_LABEL } from '@/hooks/use-db-mode'
 import {
   LayoutDashboard,
   PieChart,
@@ -23,6 +24,7 @@ interface MainNavProps {
 }
 
 export function MainNav({ currentTab, onTabChange, dbStatus = 'connected', onRefresh }: MainNavProps) {
+  const dbMode = useDbMode()
   const navItems = [
     { id: 'dashboard' as NavTab, label: '戰略總覽', icon: LayoutDashboard },
     { id: 'portfolio' as NavTab, label: '資產配置', icon: PieChart },
@@ -57,7 +59,9 @@ export function MainNav({ currentTab, onTabChange, dbStatus = 'connected', onRef
       <div className="ml-auto hidden md:flex items-center gap-3 pl-4 border-l border-border/40">
         <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <Database className="size-3 text-emerald-400" />
-          <span className="text-emerald-400 font-mono">SQLite (Local)</span>
+          <span className="text-emerald-400 font-mono" title={dbMode ? DB_LABEL[dbMode].long : ''}>
+            {dbMode ? DB_LABEL[dbMode].short : '資料庫'}
+          </span>
         </div>
         {onRefresh && (
           <button

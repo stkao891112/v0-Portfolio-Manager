@@ -72,6 +72,10 @@ export function evaluateSoxlSniperStrategy(params: {
   /** 狙擊期啟動日（盤中第一次跌到 -40% 的日期） */
   sniperActivatedAt?: string | null
   now?: Date
+  /** 本次持倉週期（上次持股歸零之後）累計買進股數 */
+  cycleBoughtQty?: number
+  /** 本次持倉週期累計賣出股數 */
+  cycleSoldQty?: number
   macroVerdict?: MacroVerdict
   /** SOXX 報價或週 K 使用過期快取 */
   soxxStale?: boolean
@@ -148,9 +152,15 @@ export function evaluateSoxlSniperStrategy(params: {
   }))
 
   // 2. Evaluate Exit Tiers
+  // 停利依「本次持倉週期已賣出比例」判斷是否已執行，避免賣過 1/3 後同一階梯重複出現
+  const sold = params.cycleSoldQty ?? 0
+  const bought = Math.max(params.cycleBoughtQty ?? 0, soxlQuantity + sold)
+  const soldRatio = bought > 0 ? sold / bought : 0
+  const TOL = 0.02 // 允許 2% 的零股誤差
+  const sellToReach = (target: number) => Math.max(0, Math.ceil(bought * target - sold))
   const exitAlerts = {
-    tier1Profit80: soxlQuantity > 0 && soxlCurrentReturnPercent >= 80,
-    tier2Profit150: soxlQuantity > 0 && soxlCurrentReturnPercent >= 150,
+    tier1Profit80: soxlQuantity > 0 && soxlCurrentReturnPercent >= 80 && soldRatio < 1 / 3 - TOL,
+    tier2Profit150: soxlQuantity > 0 && soxlCurrentReturnPercent >= 150 && soldRatio < 2 / 3 - TOL,
     tier3Profit200: soxlQuantity > 0 && soxlCurrentReturnPercent >= 200,
     ma40BreakdownWarning: analysis.isBelow40wTwoWeeks,
   }
@@ -188,7 +198,7 @@ export function evaluateSoxlSniperStrategy(params: {
       type: 'SELL_CANDIDATE',
       title: '第 2 批出場訊號成立 (獲利 +150%)',
       reason: `SOXL 當前報酬率已達 ${soxlCurrentReturnPercent.toFixed(1)}% (>= +150%)。`,
-      suggestedAction: '建議賣出適當數量，使累計出場量達到原始建倉總量的 2/3。',
+      suggestedAction: `建議賣出約 ${Math.min(soxlQuantity, sellToReach(2 / 3))} 股，使本輪累計賣出達建倉總量（${bought} 股）的 2/3。`,
       requiresHumanConfirmation: true,
       isStaleData: false,
     }
@@ -197,7 +207,7 @@ export function evaluateSoxlSniperStrategy(params: {
       type: 'SELL_CANDIDATE',
       title: '第 1 批出場訊號成立 (獲利 +80%)',
       reason: `SOXL 當前報酬率已達 ${soxlCurrentReturnPercent.toFixed(1)}% (>= +80%)。`,
-      suggestedAction: '建議賣出目前 SOXL 持倉的 1/3，回收部分本金。',
+      suggestedAction: `建議賣出約 ${Math.min(soxlQuantity, sellToReach(1 / 3))} 股（建倉總量 ${bought} 股的 1/3），回收部分本金。`,
       requiresHumanConfirmation: true,
       isStaleData: false,
     }
@@ -255,7 +265,7 @@ export function evaluateSoxlSniperStrategy(params: {
       activeSignal = {
         type: 'HOLD',
         title: '部位持有中，等待停利條件',
-        reason: `目前持有 SOXL ${soxlQuantity} 股，平均成本 $${soxlCostBasis}，未實現回報 ${soxlCurrentReturnPercent.toFixed(1)}%。`,
+        reason: `目前持有 SOXL ${soxlQuantity} 股，平均成本 $${soxlCostBasis}，未實現回報 ${soxlCurrentReturnPercent.toFixed(1)}%${sold > 0 ? `；本輪已賣出 ${sold} 股（${(soldRatio * 100).toFixed(0)}%）` : ''}。`,
         suggestedAction: '繼續耐心持有，等待獲利達 +80% 第一批停利目標。',
         requiresHumanConfirmation: false,
         isStaleData: false,
