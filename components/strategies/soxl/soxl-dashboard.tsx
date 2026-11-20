@@ -19,6 +19,8 @@ import {
   History,
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { usePortfolioStore } from '@/lib/portfolio-store'
+import { SoxlTradeDialog, type SoxlTradeRequest } from './soxl-trade-dialog'
 
 export function SoxlDashboard() {
   const [cyclePeak, setCyclePeak] = useState(320.0)
@@ -34,12 +36,17 @@ export function SoxlDashboard() {
   const [selectedScenario, setSelectedScenario] = useState('bear_2022')
   const [backtestResult, setBacktestResult] = useState<any>(null)
   const [backtestLoading, setBacktestLoading] = useState(false)
+  const [tradeRequest, setTradeRequest] = useState<SoxlTradeRequest | null>(null)
+  const refreshPortfolio = usePortfolioStore((s) => s.refreshAll)
 
   const fetchStrategyData = async () => {
     try {
       setLoading(true)
-      const res = await fetch('/api/strategy/soxl')
-      if (res.ok) {
+      const res = await fetch('/api/strategy/soxl', { cache: 'no-store' })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        toast.error('讀取 SOXL 策略失敗', { description: err?.error || `HTTP ${res.status}` })
+      } else {
         const data = await res.json()
         setData(data)
         if (data.indicators?.currentPrice) setCurrentSoxxPrice(data.indicators.currentPrice)
@@ -81,42 +88,74 @@ export function SoxlDashboard() {
   const drawdown =
     data?.indicators?.drawdownPercent ?? (cyclePeak > 0 ? (currentSoxxPrice / cyclePeak - 1) * 100 : 0)
 
-  const handleConfirmTranche = async (trancheId: number, targetPercent: number) => {
-    const qty = prompt(`請輸入預計買進 SOXL 股數 (單價約 $${currentSoxlPrice}):`, '50')
-    if (!qty) return
+  const state = data?.strategyState
+  const config = data?.config ?? state?.config
+  const maxPct: number = config?.maxPositionPercent ?? 10
+  const tranchePct: number = config?.tranchePercent ?? 2.5
+  const trancheCount: number = config?.trancheCount ?? 4
 
+  // 買進／停利賣出：開啟確認視窗（顯示預估金額、匯率、上限預覽），確認後才寫入
+  const openBuyDialog = (trancheId: number) =>
+    setTradeRequest({
+      mode: 'BUY',
+      tranche: trancheId,
+      suggestedQuantity: state?.suggestedBuyQuantity ?? 0,
+      title: `確認買進：第 ${trancheId} 批（${tranchePct}%）`,
+    })
+  const openSellDialog = () =>
+    setTradeRequest({
+      mode: 'SELL',
+      exitTier: state?.exitTierReady ?? null,
+      suggestedQuantity: state?.suggestedSellQuantity || state?.soxlHoldingQuantity || 0,
+      title: state?.exitTierReady ? `確認停利賣出：第 ${state.exitTierReady} 批` : '確認賣出 SOXL（退場）',
+    })
+
+  const handleConfirmTrade = async ({ quantity, price }: { quantity: number; price: number }) => {
+    if (!tradeRequest) return
+    const isBuy = tradeRequest.mode === 'BUY'
     try {
       const res = await fetch('/api/strategy/soxl', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action: 'BUY',
-          tranche: trancheId,
-          quantity: Number(qty),
-          price: currentSoxlPrice,
-          notes: `SOXL 策略第 ${trancheId} 批次人工確認執行`,
+          action: tradeRequest.mode,
+          tranche: isBuy ? tradeRequest.tranche : undefined,
+          exitTier: isBuy ? undefined : tradeRequest.exitTier,
+          quantity,
+          price,
+          notes: isBuy
+            ? `SOXL 策略第 ${tradeRequest.tranche} 批人工確認買進`
+            : tradeRequest.exitTier
+            ? `SOXL 策略第 ${tradeRequest.exitTier} 批停利人工確認賣出`
+            : 'SOXL 退場人工確認賣出',
         }),
       })
-
-      if (res.ok) {
-        toast.success(`成功確認執行第 ${trancheId} 批次建倉！已寫入交易紀錄帳本`)
-        fetchStrategyData()
-      } else {
-        toast.error('執行失敗')
-      }
+      const result = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(result?.error || `HTTP ${res.status}`)
+      toast.success(result.message || '已寫入交易紀錄帳本', {
+        description:
+          result.realizedPnl != null
+            ? `已實現損益 ${result.realizedPnl >= 0 ? '+' : ''}$${Number(result.realizedPnl).toFixed(2)}`
+            : undefined,
+      })
+      setTradeRequest(null)
+      await Promise.all([fetchStrategyData(), refreshPortfolio()])
     } catch (err: any) {
-      toast.error(`錯誤: ${err.message}`)
+      toast.error(isBuy ? '買進寫入失敗' : '賣出寫入失敗', { description: err.message })
     }
   }
 
   // 4 批進場狀態：由後端策略引擎計算（含總經判斷、第 4 批需曾跌過 -40%）
-  const tranches = ((data?.strategyState?.tranches as any[]) || []).map((t) => ({
+  const tranches = ((state?.tranches as any[]) || []).map((t) => ({
     id: t.tranche,
-    name: `第 ${t.tranche} 批進場 (${t.allocationPercent}%)`,
+    name: `第 ${t.tranche} 批進場 (${Number(t.allocationPercent.toFixed(2))}%)`,
     condition: t.triggerCondition,
     status: t.status === 'CANDIDATE' ? 'READY' : t.status === 'EXECUTED' ? 'DONE' : 'WAITING',
   }))
-  const signal = data?.strategyState?.activeSignal
+  const signal = state?.activeSignal
+  const canSell =
+    (state?.soxlHoldingQuantity ?? 0) > 0 &&
+    (signal?.type === 'SELL_CANDIDATE' || (signal?.type === 'WARNING' && state?.exitAlerts?.ma40BreakdownWarning))
   const macro = data?.macro
   const LIGHT: Record<string, string> = {
     green: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400',
@@ -146,21 +185,27 @@ export function SoxlDashboard() {
       ? '需人工判斷'
       : '不動作，等待'
 
-  // Exit tiers
-  const exitTiers = [
-    { tier: '第一批出場', gain: '+80%', action: '賣出目前持倉的 1/3' },
-    { tier: '第二批出場', gain: '+150%', action: '再賣出適當數量，累計出場達 2/3' },
-    { tier: '第三批出場', gain: '+200%', action: '原則上清空剩餘全部持倉' },
-  ]
+  // Exit tiers（來自策略參數）
+  const exitTiers = ((config?.exitTiers as any[]) || [
+    { tier: 1, gainPercent: 80, cumulativeSellRatio: 1 / 3 },
+    { tier: 2, gainPercent: 150, cumulativeSellRatio: 2 / 3 },
+    { tier: 3, gainPercent: 200, cumulativeSellRatio: 1 },
+  ]).map((t) => ({
+    tierNo: t.tier,
+    tier: `第 ${t.tier} 批出場`,
+    gain: `+${t.gainPercent}%`,
+    action: t.cumulativeSellRatio >= 1 ? '清空剩餘全部持倉' : `累計賣出達建倉量的 ${Math.round(t.cumulativeSellRatio * 3)}/3`,
+  }))
 
-  const riskRules = [
-    { rule: 'SOXL 最大持倉不得超過整體投資資產 10%', pass: true },
-    { rule: '禁止使用信貸、融資或合約增加部位', pass: true },
-    { rule: '禁止跌破門檻時自動攤平，嚴格依 4 批進場', pass: true },
-    { rule: '緊急預備金嚴格隔離，不可動用為 SOXL 機會預備金', pass: true },
-    { rule: '盤中暫定訊號不得作為正式週線交易依據', pass: true },
-    { rule: '所有買賣必須有人工確認按鈕，系統禁止自動下單', pass: true },
-  ]
+  // 6 條風控紀律：後端實際計算的結果
+  const riskRules: { key: string; rule: string; status: 'pass' | 'fail' | 'warn' | 'manual'; detail: string }[] =
+    state?.riskChecks ?? []
+  const RISK_STYLE: Record<string, { icon: any; cls: string; label: string }> = {
+    pass: { icon: CheckCircle2, cls: 'text-emerald-400', label: '通過' },
+    fail: { icon: AlertTriangle, cls: 'text-rose-400', label: '違反' },
+    warn: { icon: AlertTriangle, cls: 'text-amber-300', label: '注意' },
+    manual: { icon: Info, cls: 'text-slate-300', label: '需自律' },
+  }
 
   return (
     <div className="space-y-6">
@@ -177,7 +222,7 @@ export function SoxlDashboard() {
             </Badge>
           </div>
           <p className="text-xs text-muted-foreground mt-1">
-            以 SOXX（半導體大盤）為市場基準判定週期回撤；以 SOXL 為分批交易標的（10% 預備金分 4 批，上限 10%）。
+            以 SOXX（半導體大盤）為市場基準判定週期回撤；以 SOXL 為分批交易標的（每批 {Number(tranchePct.toFixed(2))}% × {trancheCount} 批，上限 {maxPct}%）。
           </p>
         </div>
 
@@ -231,7 +276,7 @@ export function SoxlDashboard() {
                     SOXL 熊市狙擊策略歷史回測模擬引擎
                   </CardTitle>
                   <CardDescription className="text-xs mt-1">
-                    嚴格考慮 SOXL 3x 每日重置槓桿磨損、滑價 (0.1%) 與交易手續費 (0.1%)，非簡單乘以 3 倍虛構報酬。
+                    使用 SOXL 實際週 K（已含 3x 每日重置磨損）；買進滑價 +0.1%、賣出滑價 -0.1%、手續費 0.1%；參數與實盤相同（上限 {maxPct}% = {Number(tranchePct.toFixed(2))}% × {trancheCount} 批）。
                   </CardDescription>
                 </div>
                 <div className="flex items-center gap-1.5">
@@ -274,8 +319,13 @@ export function SoxlDashboard() {
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                     <div className="p-3 rounded-lg border border-border/40 bg-background/50">
                       <span className="text-[11px] text-muted-foreground">策略總報酬率</span>
-                      <div className="text-xl font-bold font-mono text-emerald-400 mt-1">
-                        +{backtestResult.totalReturnPercent}%
+                      <div
+                        className={`text-xl font-bold font-mono mt-1 ${
+                          backtestResult.totalReturnPercent >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                        }`}
+                      >
+                        {backtestResult.totalReturnPercent >= 0 ? '+' : ''}
+                        {backtestResult.totalReturnPercent}%
                       </div>
                       <span className="text-[10px] text-muted-foreground">
                         同期大盤: {backtestResult.benchmarkReturnPercent}%
@@ -295,13 +345,16 @@ export function SoxlDashboard() {
                       <div className="text-xl font-bold font-mono text-rose-400 mt-1">
                         {backtestResult.maxDrawdownPercent}%
                       </div>
-                      <span className="text-[10px] text-emerald-400">大幅優於 SOXL 純持有的 -85%</span>
+                      <span className="text-[10px] text-muted-foreground">
+                        單筆最大虧損 {backtestResult.maxSingleLossPercent}%
+                        {backtestResult.skippedWeeks ? `｜略過 ${backtestResult.skippedWeeks} 週（日期對不上）` : ''}
+                      </span>
                     </div>
 
                     <div className="p-3 rounded-lg border border-border/40 bg-background/50">
                       <span className="text-[11px] text-muted-foreground">交易勝率 / 次數</span>
                       <div className="text-xl font-bold font-mono text-primary mt-1">
-                        {backtestResult.winRate}% / {backtestResult.tradesCount} 筆
+                        {backtestResult.winRate == null ? '—（無賣出）' : `${backtestResult.winRate}%`} / {backtestResult.tradesCount} 筆
                       </div>
                       <span className="text-[10px] text-muted-foreground">
                         平均持有週數: {backtestResult.avgHoldingWeeks} 週
@@ -337,15 +390,16 @@ export function SoxlDashboard() {
                                       : 'border-rose-500/40 text-rose-400 bg-rose-500/10'
                                   }
                                 >
-                                  {t.type} {t.tranche ? `第${t.tranche}批` : ''}
+                                  {t.type} {t.tranche ? `第${t.tranche}批` : t.exitTier ? `停利${t.exitTier}` : ''}
                                 </Badge>
                               </td>
                               <td className="p-2.5 text-right">${t.price.toFixed(2)}</td>
                               <td className="p-2.5 text-right">{t.quantity}</td>
                               <td className="p-2.5 text-right">
-                                {t.returnPercent ? (
-                                  <span className="text-emerald-400 font-bold">
-                                    +{t.returnPercent.toFixed(1)}% (+${Math.round(t.pnl)} USD)
+                                {t.type === 'SELL' && t.returnPercent != null ? (
+                                  <span className={`font-bold ${(t.pnl ?? 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                    {t.returnPercent >= 0 ? '+' : ''}
+                                    {t.returnPercent.toFixed(1)}% ({(t.pnl ?? 0) >= 0 ? '+' : '-'}${Math.abs(Math.round(t.pnl ?? 0))} USD)
                                   </span>
                                 ) : (
                                   '-'
@@ -478,13 +532,19 @@ export function SoxlDashboard() {
         <Card className="border-border/40 bg-card/60 backdrop-blur-xl">
           <CardHeader className="pb-3 border-b border-border/30">
             <CardTitle className="text-base font-semibold text-foreground flex items-center justify-between">
-              <span>四批次進場狀態機 (每批 2.5%)</span>
+              <span>
+                {trancheCount} 批次進場狀態機 (每批 {Number(tranchePct.toFixed(2))}%)
+              </span>
               <Badge variant="outline" className="border-primary/40 text-primary text-xs">
-                持倉上限 10%
+                持倉上限 {maxPct}%
               </Badge>
             </CardTitle>
             <CardDescription className="text-xs">
-              盤中曾跌到 -40% 即啟動狙擊期，之後每 4 週解鎖一批；跌更深或站回均線會提前解鎖。每批需人工確認。
+              盤中曾跌到 {config?.activateDrawdown ?? -40}% 即啟動狙擊期，之後每 {config?.intervalWeeks ?? 4} 週解鎖一批；跌更深（
+              {(config?.earlyUnlockDrawdowns ?? [-40, -50, -60]).slice(1).join('% / ')}%）或站回均線會提前解鎖。每批需人工確認。
+              {state && !state.isCurrentBarConfirmed && (
+                <span className="ml-1 text-amber-300">（本週 K 棒尚未收盤，週線條件僅供參考）</span>
+              )}
             </CardDescription>
           </CardHeader>
           <CardContent className="pt-4 space-y-3">
@@ -512,7 +572,13 @@ export function SoxlDashboard() {
                 {t.status === 'READY' ? (
                   <Button
                     size="sm"
-                    onClick={() => handleConfirmTranche(t.id, 2.5)}
+                    onClick={() => openBuyDialog(t.id)}
+                    disabled={signal?.type !== 'BUY_CANDIDATE' && signal?.type !== 'MANUAL_REVIEW_REQUIRED'}
+                    title={
+                      signal?.type === 'BUY_CANDIDATE' || signal?.type === 'MANUAL_REVIEW_REQUIRED'
+                        ? undefined
+                        : '目前訊號不允許買進（可能超過上限、總經紅燈或資料過期）'
+                    }
                     className="bg-primary text-primary-foreground hover:bg-primary/80 text-xs font-semibold"
                   >
                     人工確認執行
@@ -549,7 +615,27 @@ export function SoxlDashboard() {
                 </div>
               ))}
               <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-2.5 text-xs text-rose-300">
-                <strong>重大退場警示：</strong>SOXX 若連續 2 週收盤跌破 40 週均線 (40W MA)，系統將產生警示建議退出剩餘持倉。
+                <strong>重大退場警示：</strong>SOXX 若連續 {config?.stopLossMa40Weeks ?? 2} 週收盤跌破 40 週均線 (40W MA)，系統將產生警示建議退出剩餘持倉。
+              </div>
+              <div className="flex flex-col gap-2 rounded-lg border border-border/40 bg-background/50 p-2.5 text-xs sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-muted-foreground">
+                  持有 <span className="font-mono text-foreground">{state?.soxlHoldingQuantity ?? 0}</span> 股
+                  ，報酬 <span className="font-mono text-foreground">{(state?.soxlCurrentReturnPercent ?? 0).toFixed(1)}%</span>
+                  {canSell && state?.suggestedSellQuantity ? (
+                    <>
+                      ，建議賣出 <span className="font-mono font-bold text-rose-300">{state.suggestedSellQuantity}</span> 股
+                    </>
+                  ) : null}
+                </div>
+                <Button
+                  size="sm"
+                  onClick={openSellDialog}
+                  disabled={!canSell}
+                  className="bg-rose-600 text-white hover:bg-rose-600/90 text-xs font-semibold"
+                  title={canSell ? undefined : '停利或退場條件成立時才可確認賣出'}
+                >
+                  {state?.exitTierReady ? `停利賣出確認（第 ${state.exitTierReady} 批）` : '退場賣出確認'}
+                </Button>
               </div>
             </CardContent>
           </Card>
@@ -562,16 +648,39 @@ export function SoxlDashboard() {
               </CardTitle>
             </CardHeader>
             <CardContent className="pt-3 space-y-1.5 text-xs">
-              {riskRules.map((r, i) => (
-                <div key={i} className="flex items-center gap-2 text-muted-foreground">
-                  <CheckCircle2 className="size-3.5 text-emerald-400 shrink-0" />
-                  <span>{r.rule}</span>
-                </div>
-              ))}
+              {riskRules.length === 0 && <div className="text-muted-foreground">讀取風控檢查結果中…</div>}
+              {riskRules.map((r) => {
+                const st = RISK_STYLE[r.status] ?? RISK_STYLE.manual
+                const Icon = st.icon
+                return (
+                  <div key={r.key} className="flex items-start gap-2 text-muted-foreground">
+                    <Icon className={`mt-0.5 size-3.5 shrink-0 ${st.cls}`} />
+                    <div className="min-w-0">
+                      <div>
+                        <span className="text-foreground">{r.rule}</span>
+                        <span className={`ml-1.5 text-[10px] ${st.cls}`}>［{st.label}］</span>
+                      </div>
+                      <div className="text-[11px]">{r.detail}</div>
+                    </div>
+                  </div>
+                )
+              })}
             </CardContent>
           </Card>
         </div>
       </div>
+
+      <SoxlTradeDialog
+        request={tradeRequest}
+        onClose={() => setTradeRequest(null)}
+        onConfirm={handleConfirmTrade}
+        soxlPrice={currentSoxlPrice}
+        exchangeRate={data?.exchangeRate ?? 32.5}
+        holdingQuantity={state?.soxlHoldingQuantity ?? 0}
+        costBasis={state?.soxlCostBasis ?? 0}
+        totalPortfolioValueUsd={state?.totalPortfolioValue ?? 0}
+        maxPositionPercent={maxPct}
+      />
     </div>
   )
 }

@@ -18,6 +18,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Category } from '@/lib/portfolio-types'
 import { usePortfolioStore } from '@/lib/portfolio-store'
+import { valueAsset } from '@/lib/valuation'
 import { toast } from 'sonner'
 import { AddAssetDialog } from './add-asset-dialog'
 import { AssetRow } from './asset-row'
@@ -33,15 +34,13 @@ export function CategoryCard({ category, totalPortfolioValue }: CategoryCardProp
   const [editName, setEditName] = useState(category.name)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
 
-  const { removeCategory, updateCategory, convertToDisplayCurrency, displayCurrency } = usePortfolioStore()
+  const { removeCategory, updateCategory, displayCurrency, exchangeRate } = usePortfolioStore()
 
   const currencySymbol = displayCurrency === 'USD' ? '$' : 'NT$'
 
+  // 共用估值口徑：市價 = 現價（沒有報價時用成本價）
   const categoryValue = category.assets.reduce(
-    (sum, asset) => {
-      const value = asset.quantity * asset.costPerUnit
-      return sum + convertToDisplayCurrency(value, asset.currency || 'USD')
-    },
+    (sum, asset) => sum + valueAsset(asset, displayCurrency, exchangeRate).marketValue,
     0
   )
   const categoryPercent = totalPortfolioValue > 0
@@ -52,12 +51,13 @@ export function CategoryCard({ category, totalPortfolioValue }: CategoryCardProp
     0
   )
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (editName.trim()) {
       const newName = editName.trim()
-      updateCategory(category.id, newName)
-      toast.success(`已將分類名稱更新為「${newName}」`)
       setIsEditing(false)
+      const ok = await updateCategory(category.id, newName)
+      if (ok) toast.success(`已將分類名稱更新為「${newName}」`)
+      else setEditName(category.name)
     }
   }
 
@@ -66,10 +66,10 @@ export function CategoryCard({ category, totalPortfolioValue }: CategoryCardProp
     setIsEditing(false)
   }
 
-  const handleDeleteCategory = () => {
-    removeCategory(category.id)
-    toast.success(`已刪除分類「${category.name}」`)
+  const handleDeleteCategory = async () => {
     setDeleteDialogOpen(false)
+    const ok = await removeCategory(category.id)
+    if (ok) toast.success(`已刪除分類「${category.name}」`)
   }
 
   return (
@@ -251,8 +251,8 @@ export function CategoryCard({ category, totalPortfolioValue }: CategoryCardProp
               <div className="hidden md:grid grid-cols-12 gap-2 px-3 text-xs font-medium text-muted-foreground">
                 <div className="col-span-2">標的</div>
                 <div className="col-span-2">目標比例</div>
-                <div className="col-span-3">持有數量 x 成本</div>
-                <div className="col-span-2">現值 / 實際比例</div>
+                <div className="col-span-3">持有數量 x 成本 / 現價</div>
+                <div className="col-span-2">市值 / 實際比例</div>
                 <div className="col-span-2">建議調整</div>
                 <div className="col-span-1"></div>
               </div>

@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { marketService } from '@/lib/market-data/market-service'
 import { runSoxlBacktest, BACKTEST_SCENARIOS } from '@/lib/strategies/backtest'
+import { loadSoxlConfig } from '@/lib/strategies/config-loader'
 
 export async function GET(request: Request) {
   try {
@@ -13,15 +14,19 @@ export async function GET(request: Request) {
     const startDate = new Date(scenario.startDate)
     const endDate = new Date(scenario.endDate)
 
-    const [soxxBars, soxlBars] = await Promise.all([
-      marketService['provider'].getHistoricalPrices('SOXX', startDate, endDate, '1wk'),
-      marketService['provider'].getHistoricalPrices('SOXL', startDate, endDate, '1wk'),
+    const provider = marketService.getProvider()
+    const [soxxBars, soxlBars, strategy] = await Promise.all([
+      provider.getHistoricalPrices('SOXX', startDate, endDate, '1wk'),
+      provider.getHistoricalPrices('SOXL', startDate, endDate, '1wk'),
+      // 與實盤相同的參數來源（預設 10% = 2.5% × 4 批，可被資料庫設定覆寫）
+      loadSoxlConfig().catch(() => undefined),
     ])
 
     const result = runSoxlBacktest({
       soxxBars,
       soxlBars,
       scenarioName: scenario.name,
+      config: { strategy },
     })
 
     return NextResponse.json({

@@ -18,11 +18,12 @@ import { ShieldCheck, Terminal } from 'lucide-react'
 export default function Home() {
   const dbMode = useDbMode()
   const [currentTab, setCurrentTab] = useState<NavTab>('dashboard')
-  const { categories, displayCurrency, exchangeRate, syncWithDatabase, isDbConnected } = usePortfolioStore()
+  const { categories, displayCurrency, exchangeRate, refreshAll, isSyncing, isRefreshingQuotes } = usePortfolioStore()
 
+  // 初始化：讀資料庫 → 更新全部持倉報價（含台股 2330.TW、00662.TW、00935.TW、00830.TW）
   useEffect(() => {
-    syncWithDatabase()
-  }, [syncWithDatabase])
+    void refreshAll()
+  }, [refreshAll])
 
   return (
     <div className="relative min-h-screen bg-background text-foreground selection:bg-primary/30">
@@ -62,7 +63,8 @@ export default function Home() {
             <MainNav
               currentTab={currentTab}
               onTabChange={setCurrentTab}
-              onRefresh={() => syncWithDatabase()}
+              onRefresh={() => void refreshAll()}
+              refreshing={isSyncing || isRefreshingQuotes}
             />
           </div>
         </div>

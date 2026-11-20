@@ -1,4 +1,4 @@
-import { PriceBar } from '../market-data/provider-interface'
+import { PriceBar, Quote } from '../market-data/provider-interface'
 
 export interface SoxxIndicatorAnalysis {
   currentPrice: number
@@ -123,9 +123,13 @@ export function analyzeSoxxIndicators(
   }
 
   // Breakout of previous 4 weeks highest weekly close
+  // 「前 4 週」= 目前這根 K 棒之前的 4 根已收盤週線：
+  // - 最新一根已收盤 → 它本身就在 confirmedBars 最後，要排除 → slice(-5, -1)
+  // - 最新一根是盤中（未收盤）→ 它不在 confirmedBars 裡，最後 4 根已收盤週線就是前 4 週 → slice(-4)
+  //   （舊版一律 slice(-5, -1)，盤中時會漏掉上週收盤）
   let isBreakout4wHigh = false
-  if (confirmedBars.length >= 5) {
-    const prev4Bars = confirmedBars.slice(-5, -1)
+  const prev4Bars = isCurrentBarConfirmed ? confirmedBars.slice(-5, -1) : confirmedBars.slice(-4)
+  if (prev4Bars.length === 4) {
     const prev4HighClose = Math.max(...prev4Bars.map((b) => b.close))
     isBreakout4wHigh = currentPrice > prev4HighClose
   }
@@ -182,4 +186,44 @@ export function analyzeSoxxIndicators(
     isCurrentBarConfirmed,
     marketPhase,
   }
+}
+
+/**
+ * 用即時報價覆蓋最新一根「盤中」週 K 的收盤價（高低點一併延伸），讓回撤、均線距離即時。
+ * - 最新一根尚未收盤 → 直接覆蓋
+ * - 最新一根已收盤，但報價時間晚於該週 → 補一根「未收盤」的本週 K 棒
+ * - 報價過期、無效或比 K 棒舊 → 原樣回傳
+ * 不修改傳入的陣列。
+ */
+export function applyLiveQuoteToBars(bars: PriceBar[], quote: Pick<Quote, 'price' | 'timestamp' | 'isStale'> | null | undefined): PriceBar[] {
+  if (!bars.length || !quote || quote.isStale || !(quote.price > 0)) return bars
+  const out = bars.slice()
+  const last = out[out.length - 1]
+  const quoteTime = new Date(quote.timestamp).getTime()
+  const lastTime = new Date(last.timestamp).getTime()
+  if (!Number.isFinite(quoteTime) || quoteTime < lastTime) return bars
+
+  if (!last.isClosed) {
+    out[out.length - 1] = {
+      ...last,
+      close: quote.price,
+      high: Math.max(last.high, quote.price),
+      low: Math.min(last.low, quote.price),
+    }
+    return out
+  }
+
+  const WEEK = 7 * 24 * 3600 * 1000
+  if (quoteTime - lastTime >= WEEK) {
+    out.push({
+      timestamp: new Date(quoteTime).toISOString(),
+      open: last.close,
+      high: Math.max(last.close, quote.price),
+      low: Math.min(last.close, quote.price),
+      close: quote.price,
+      volume: 0,
+      isClosed: false,
+    })
+  }
+  return out
 }

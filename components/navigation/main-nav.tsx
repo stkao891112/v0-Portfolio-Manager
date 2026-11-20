@@ -21,9 +21,10 @@ interface MainNavProps {
   onTabChange: (tab: NavTab) => void
   dbStatus?: 'connected' | 'connecting' | 'error'
   onRefresh?: () => void
+  refreshing?: boolean
 }
 
-export function MainNav({ currentTab, onTabChange, dbStatus = 'connected', onRefresh }: MainNavProps) {
+export function MainNav({ currentTab, onTabChange, dbStatus = 'connected', onRefresh, refreshing = false }: MainNavProps) {
   const dbMode = useDbMode()
   const navItems = [
     { id: 'dashboard' as NavTab, label: '戰略總覽', icon: LayoutDashboard },
@@ -56,8 +57,8 @@ export function MainNav({ currentTab, onTabChange, dbStatus = 'connected', onRef
         )
       })}
 
-      <div className="ml-auto hidden md:flex items-center gap-3 pl-4 border-l border-border/40">
-        <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+      <div className="sticky right-0 ml-auto flex shrink-0 items-center gap-3 bg-background/95 pl-2 md:static md:bg-transparent md:pl-4 border-l border-border/40">
+        <div className="hidden md:flex items-center gap-1.5 text-xs text-muted-foreground">
           <Database className="size-3 text-emerald-400" />
           <span className="text-emerald-400 font-mono" title={dbMode ? DB_LABEL[dbMode].long : ''}>
             {dbMode ? DB_LABEL[dbMode].short : '資料庫'}
@@ -66,10 +67,12 @@ export function MainNav({ currentTab, onTabChange, dbStatus = 'connected', onRef
         {onRefresh && (
           <button
             onClick={onRefresh}
-            className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors"
-            title="手動刷新行情與資料"
+            disabled={refreshing}
+            className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors disabled:opacity-60"
+            title="重新讀取資料庫並更新全部持倉報價"
+            aria-label="刷新資料與報價"
           >
-            <RefreshCw className="size-3" />
+            <RefreshCw className={cn('size-3', refreshing && 'animate-spin')} />
             <span>刷新</span>
           </button>
         )}

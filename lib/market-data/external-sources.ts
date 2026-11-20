@@ -17,9 +17,48 @@ import { sqlite } from '@/lib/db/client'
 export interface Sourced<T> {
   value: T | null
   updatedAt: string | null // 資料抓取時間
-  stale: boolean // true = 本次抓取失敗，使用舊快取或沒有資料
+  /**
+   * true = 資料已超出「有效期（Validity Horizon）」或完全沒有資料。
+   * 單次重抓失敗但快取仍在有效期內（例如上個月的月營收），不算過期。
+   */
+  stale: boolean
+  /** 本次嘗試重抓失敗（改用快取） */
+  refreshFailed?: boolean
+  /** 資料本身的觀測日（例如月營收的月份月底、財報期末），沒有則為 null */
+  observedAt?: string | null
   source: string
   error?: string
+}
+
+export interface CacheOptions<T> {
+  /**
+   * 資料有效期（秒）：
+   * - 有 observedAt → 從「觀測日」起算（月資料、季報適用）
+   * - 沒有 → 從「上次成功抓取時間」起算
+   * 預設 = 重抓頻率 TTL × 3
+   */
+  validitySeconds?: number
+  /** 從資料取出觀測日（ISO） */
+  observedAt?: (value: T) => string | null
+}
+
+/** 判斷快取是否仍在有效期內（純函式，方便測試） */
+export function isWithinValidity(params: {
+  now: number
+  updatedAt: string
+  observedAt?: string | null
+  validitySeconds: number
+}): boolean {
+  const base = params.observedAt ? new Date(params.observedAt).getTime() : new Date(params.updatedAt).getTime()
+  if (!Number.isFinite(base)) return false
+  return params.now - base <= params.validitySeconds * 1000
+}
+
+/** 「YYYY-MM」→ 該月最後一天（ISO），月資料的觀測日 */
+export function monthEndIso(ym: string): string | null {
+  const m = /^(\d{4})-(\d{2})$/.exec(ym)
+  if (!m) return null
+  return new Date(Date.UTC(Number(m[1]), Number(m[2]), 0, 23, 59, 59)).toISOString()
 }
 
 let cacheTableReady = false
@@ -35,13 +74,24 @@ async function ensureCacheTable() {
   cacheTableReady = true
 }
 
-/** 依 key 讀快取；超過 ttlSeconds 才呼叫 fetcher 重抓 */
-async function cached<T>(
+/** 重抓失敗後的冷卻時間：避免每次請求都去打已經失敗的外部 API（被限流時更嚴重） */
+const RETRY_COOLDOWN_MS = 5 * 60 * 1000
+const lastFailureAt = new Map<string, number>()
+
+/**
+ * 依 key 讀快取；超過 ttlSeconds（重抓頻率）才呼叫 fetcher 重抓。
+ * 重抓失敗時：快取仍在有效期內 → stale = false（只標 refreshFailed）；超出有效期 → stale = true。
+ */
+export async function cached<T>(
   key: string,
   ttlSeconds: number,
   source: string,
-  fetcher: () => Promise<T>
+  fetcher: () => Promise<T>,
+  options: CacheOptions<T> = {}
 ): Promise<Sourced<T>> {
+  const validitySeconds = options.validitySeconds ?? ttlSeconds * 3
+  const observed = (v: T | null) => (v != null && options.observedAt ? options.observedAt(v) : null)
+
   let row: { json: string; updated_at: string } | undefined
   try {
     await ensureCacheTable()
@@ -53,16 +103,26 @@ async function cached<T>(
     row = undefined // 資料庫不能用時直接抓，不快取
   }
 
+  const fromCache = (r: { json: string; updated_at: string }, refreshFailed: boolean, error?: string): Sourced<T> => {
+    const value = JSON.parse(r.json) as T
+    const observedAt = observed(value)
+    const valid = isWithinValidity({ now: Date.now(), updatedAt: r.updated_at, observedAt, validitySeconds })
+    return { value, updatedAt: r.updated_at, stale: !valid, refreshFailed, observedAt, source, error }
+  }
+
   if (row) {
     const age = (Date.now() - new Date(row.updated_at).getTime()) / 1000
-    if (age < ttlSeconds) {
-      return { value: JSON.parse(row.json), updatedAt: row.updated_at, stale: false, source }
+    if (age < ttlSeconds) return fromCache(row, false)
+    const failedAt = lastFailureAt.get(key)
+    if (failedAt && Date.now() - failedAt < RETRY_COOLDOWN_MS) {
+      return fromCache(row, true, '冷卻中：上次重抓失敗，稍後再試')
     }
   }
 
   try {
     const value = await fetcher()
     const now = new Date().toISOString()
+    lastFailureAt.delete(key)
     try {
       await sqlite.run(
         `INSERT INTO indicator_cache (key, json, updated_at) VALUES (?, ?, ?)
@@ -72,13 +132,12 @@ async function cached<T>(
     } catch {
       /* 快取寫入失敗不影響回傳 */
     }
-    return { value, updatedAt: now, stale: false, source }
+    return { value, updatedAt: now, stale: false, refreshFailed: false, observedAt: observed(value), source }
   } catch (err: any) {
     console.warn(`[external-sources] ${key} 抓取失敗:`, err?.message)
-    if (row) {
-      return { value: JSON.parse(row.json), updatedAt: row.updated_at, stale: true, source, error: err?.message }
-    }
-    return { value: null, updatedAt: null, stale: true, source, error: err?.message }
+    lastFailureAt.set(key, Date.now())
+    if (row) return fromCache(row, true, err?.message)
+    return { value: null, updatedAt: null, stale: true, refreshFailed: true, observedAt: null, source, error: err?.message }
   }
 }
 
@@ -96,6 +155,15 @@ async function getJson(url: string, headers: Record<string, string> = {}, timeou
 
 const HOUR = 3600
 const DAY = 24 * HOUR
+
+/**
+ * 月資料（失業率、月營收）：當月數字在下個月才公布，
+ * 所以「最新月份月底起 75 天內」都算有效，不因單次重抓失敗就標成過期。
+ */
+const MONTHLY_VALIDITY: CacheOptions<{ ym: string }[]> = {
+  validitySeconds: 75 * DAY,
+  observedAt: (v) => (v.length ? monthEndIso(v[v.length - 1].ym) : null),
+}
 
 // ---------------------------------------------------------------------------
 // Yahoo K 線（收盤價序列）
@@ -176,7 +244,7 @@ export function getBtcMvrv() {
       .sort((a, b) => (a.t < b.t ? -1 : 1))
     if (!out.length) throw new Error('CoinMetrics 無 MVRV 資料')
     return out
-  })
+  }, { validitySeconds: 3 * DAY, observedAt: (v) => v.at(-1)?.t ?? null })
 }
 
 /** 恐懼與貪婪指數，近 30 天 */
@@ -194,7 +262,8 @@ export function getFearGreed() {
         label: r.value_classification,
         t: new Date(Number(r.timestamp) * 1000).toISOString(),
       }))
-    }
+    },
+    { validitySeconds: 3 * DAY, observedAt: (v) => v[0]?.t ?? null }
   )
 }
 
@@ -207,7 +276,7 @@ export function getMstrBtcHoldings() {
     )
     if (!co?.total_holdings) throw new Error('CoinGecko 找不到 MSTR 持幣資料')
     return Number(co.total_holdings)
-  })
+  }, { validitySeconds: 7 * DAY })
 }
 
 /** MSTR 稀釋後加權股數（SEC 最新一季財報） */
@@ -235,7 +304,9 @@ export function getMstrDilutedShares() {
       const latest = quarterly.sort((a, b) => (a.end < b.end ? -1 : 1)).pop()
       if (!latest) throw new Error('SEC 找不到 MSTR 股數')
       return { shares: Number(latest.val), periodEnd: latest.end, filed: latest.filed }
-    }
+    },
+    // 季報：期末後約 45 天才申報，下一季再過約 90 天 → 期末起 150 天內都算有效
+    { validitySeconds: 150 * DAY, observedAt: (v) => v.periodEnd }
   )
 }
 
@@ -255,7 +326,7 @@ export function getUsUnemployment() {
       .sort((a, b) => (a.ym < b.ym ? -1 : 1))
     if (out.length < 15) throw new Error('BLS 失業率資料不足')
     return out
-  })
+  }, MONTHLY_VALIDITY)
 }
 
 /** 台積電月營收（近 26 個月），算年增率 */
@@ -274,5 +345,5 @@ export function getTsmcMonthlyRevenue() {
       .sort((a, b) => (a.ym < b.ym ? -1 : 1))
     if (out.length < 13) throw new Error('台積電月營收資料不足')
     return out
-  })
+  }, MONTHLY_VALIDITY)
 }

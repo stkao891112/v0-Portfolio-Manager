@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { calculateSMA, calculateDrawdown, analyzeSoxxIndicators } from '../lib/strategies/indicators'
+import { calculateSMA, calculateDrawdown, analyzeSoxxIndicators, applyLiveQuoteToBars } from '../lib/strategies/indicators'
 import { PriceBar } from '../lib/market-data/provider-interface'
 
 describe('Technical Indicators Calculation Tests', () => {
@@ -48,5 +48,53 @@ describe('Technical Indicators Calculation Tests', () => {
     expect(analysis.drawdownPercent).toBeLessThan(0)
     expect(analysis.ma10w).toBeDefined()
     expect(analysis.ma40w).toBeDefined()
+  })
+
+  const WEEK = 7 * 24 * 3600 * 1000
+  const mk = (closes: number[], lastClosed: boolean): PriceBar[] =>
+    closes.map((c, i) => ({
+      timestamp: new Date(Date.UTC(2026, 0, 5) + i * WEEK).toISOString(),
+      open: c,
+      high: c,
+      low: c,
+      close: c,
+      volume: 1,
+      isClosed: i < closes.length - 1 ? true : lastClosed,
+    }))
+
+  it('isBreakout4wHigh 盤中邊界：最新週未收盤時，前 4 週要包含上週收盤', () => {
+    // 已收盤：100,100,100,100,100,120（上週）；本週盤中 115 → 沒有突破上週 120
+    const intraday = analyzeSoxxIndicators(mk([100, 100, 100, 100, 100, 120, 115], false), 200)
+    expect(intraday.isCurrentBarConfirmed).toBe(false)
+    expect(intraday.isBreakout4wHigh).toBe(false) // 舊版 slice(-5,-1) 漏掉上週 120 → 誤判 true
+
+    // 本週盤中 121 → 突破上週 120
+    expect(analyzeSoxxIndicators(mk([100, 100, 100, 100, 100, 120, 121], false), 200).isBreakout4wHigh).toBe(true)
+  })
+
+  it('isBreakout4wHigh 已收盤：前 4 週不含本週自己', () => {
+    const closed = analyzeSoxxIndicators(mk([100, 100, 100, 100, 120, 125], true), 200)
+    expect(closed.isCurrentBarConfirmed).toBe(true)
+    expect(closed.isBreakout4wHigh).toBe(true)
+    const notBreak = analyzeSoxxIndicators(mk([100, 100, 100, 130, 120, 125], true), 200)
+    expect(notBreak.isBreakout4wHigh).toBe(false)
+  })
+
+  it('即時報價覆蓋最新一根盤中週 K；已收盤則補一根未收盤 K 棒；過期報價不使用', () => {
+    const open = mk([100, 110], false)
+    const t = new Date(new Date(open[1].timestamp).getTime() + 2 * 24 * 3600 * 1000).toISOString()
+    const a = applyLiveQuoteToBars(open, { price: 90, timestamp: t, isStale: false })
+    expect(a[1].close).toBe(90)
+    expect(a[1].low).toBe(90)
+    expect(open[1].close).toBe(110) // 不修改原陣列
+
+    const closed = mk([100, 110], true)
+    const t2 = new Date(new Date(closed[1].timestamp).getTime() + 8 * 24 * 3600 * 1000).toISOString()
+    const b = applyLiveQuoteToBars(closed, { price: 95, timestamp: t2, isStale: false })
+    expect(b).toHaveLength(3)
+    expect(b[2].isClosed).toBe(false)
+    expect(analyzeSoxxIndicators(b, 200).isCurrentBarConfirmed).toBe(false)
+
+    expect(applyLiveQuoteToBars(open, { price: 90, timestamp: t, isStale: true })).toBe(open)
   })
 })

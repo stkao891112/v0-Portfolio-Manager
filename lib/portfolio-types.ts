@@ -16,6 +16,8 @@ export interface Category {
   id: string
   name: string
   color: string
+  /** 分類目標比例（資料庫欄位；沒有時以各資產目標比例加總） */
+  targetPercent?: number
   assets: Asset[]
 }
 

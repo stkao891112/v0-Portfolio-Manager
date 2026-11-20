@@ -39,13 +39,14 @@ export function AddAssetDialog({ categoryId, categoryName }: AddAssetDialogProps
   const [currency, setCurrency] = useState<Currency>('USD')
   const addAsset = usePortfolioStore((state) => state.addAsset)
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (symbol.trim() && targetPercent) {
       const formattedSymbol = symbol.trim().toUpperCase()
       const parsedQuantity = parseFloat(quantity) || 0
       const parsedCost = parseFloat(costPerUnit) || 0
-      addAsset(
+      setOpen(false)
+      const ok = await addAsset(
         categoryId,
         formattedSymbol,
         parseFloat(targetPercent),
@@ -53,6 +54,7 @@ export function AddAssetDialog({ categoryId, categoryName }: AddAssetDialogProps
         parsedQuantity,
         parsedCost
       )
+      if (!ok) return // 失敗時 store 已回滾並顯示錯誤
       toast.success(`已新增標的 ${formattedSymbol}`)
       setSymbol('')
       setTargetPercent('')

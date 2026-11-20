@@ -7,7 +7,7 @@ export const portfolioSettings = sqliteTable('portfolio_settings', {
   monthlyInvestmentAmount: real('monthly_investment_amount').notNull().default(20000),
   emergencyFundAmount: real('emergency_fund_amount').notNull().default(0),
   soxlReserveTargetPercent: real('soxl_reserve_target_percent').notNull().default(10.0),
-  soxlMaxPositionPercent: real('soxl_max_position_percent').notNull().default(5.0),
+  soxlMaxPositionPercent: real('soxl_max_position_percent').notNull().default(10.0), // 預設值來源：lib/strategies/config.ts
   updatedAt: text('updated_at').notNull(),
 })
 
@@ -49,6 +49,8 @@ export const transactions = sqliteTable('transactions', {
   exchangeRate: real('exchange_rate').notNull().default(1.0),
   realizedPnl: real('realized_pnl'),
   notes: text('notes'),
+  /** SOXL 狙擊策略批次編號（1～4）；結構化記錄，取代從備註文字比對「第 N 批」 */
+  strategyTranche: integer('strategy_tranche'),
   createdAt: text('created_at').notNull(),
 })
 
@@ -78,7 +80,7 @@ export const marketPrices = sqliteTable('market_prices', {
   id: text('id').primaryKey(),
   symbol: text('symbol').notNull().unique(),
   price: real('price').notNull(),
-  change24h: real('change_24h'),
+  change24h: real('change_24h'), // 漲跌幅 %（不是金額）
   volume: real('volume'),
   isStale: integer('is_stale').notNull().default(0),
   timestamp: text('timestamp').notNull(),

@@ -1,6 +1,7 @@
 'use client'
 
 import { usePortfolioStore } from '@/lib/portfolio-store'
+import { valuePortfolio } from '@/lib/valuation'
 import { usePWA } from '@/hooks/use-pwa'
 import { AddCategoryDialog } from './add-category-dialog'
 import { CategoryCard } from './category-card'
@@ -15,15 +16,10 @@ interface PortfolioManagerProps {
 
 export function PortfolioManager({ hideHeader = false }: PortfolioManagerProps) {
   usePWA()
-  const { categories, displayCurrency, convertToDisplayCurrency } = usePortfolioStore()
+  const { categories, displayCurrency, exchangeRate } = usePortfolioStore()
 
-  const totalPortfolioValue = categories.reduce(
-    (sum, cat) => sum + cat.assets.reduce((s, a) => {
-      const value = a.quantity * a.costPerUnit
-      return s + convertToDisplayCurrency(value, a.currency || 'USD')
-    }, 0),
-    0
-  )
+  // 共用估值口徑（與總覽頁、SOXL 策略權重分母一致）：市價 = 現價 ?? 成本價
+  const totalPortfolioValue = valuePortfolio(categories, displayCurrency, exchangeRate).totalValue
 
   return (
     <div className={hideHeader ? "relative z-10" : "relative z-10 min-h-screen"}>

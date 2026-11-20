@@ -39,12 +39,15 @@ export function CurrencySettings() {
     setOpen(isOpen)
   }
 
-  const handleSave = () => {
-    setDisplayCurrency(tempCurrency)
-    const rate = parseFloat(tempRate) || 32.5
-    setExchangeRate(rate)
-    toast.success(`幣種與匯率設定已儲存 (1 USD = ${rate} TWD)`)
+  const handleSave = async () => {
+    const rate = parseFloat(tempRate)
+    if (!(rate > 0)) {
+      toast.error('匯率必須是大於 0 的數字')
+      return
+    }
     setOpen(false)
+    const [okCurrency, okRate] = await Promise.all([setDisplayCurrency(tempCurrency), setExchangeRate(rate)])
+    if (okCurrency && okRate) toast.success(`幣種與匯率設定已儲存 (1 USD = ${rate} TWD)`)
   }
 
   return (

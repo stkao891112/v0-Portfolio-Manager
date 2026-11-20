@@ -1,8 +1,13 @@
 import { NextResponse } from 'next/server'
 import { getDb, sqlite } from '@/lib/db/client'
-import { categories, assets, portfolioSettings } from '@/lib/db/schema'
+import { categories, assets } from '@/lib/db/schema'
 import { ensureTablesExist, seedDefaultPortfolioIfEmpty } from '@/lib/db/init'
+import { loadPortfolioSettings } from '@/lib/strategies/config-loader'
+import { mergePortfolioSettings, SettingsValidationError } from '@/lib/portfolio-settings'
+import { valuePortfolio } from '@/lib/valuation'
 import { asc } from 'drizzle-orm'
+
+export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
@@ -10,16 +15,7 @@ export async function GET() {
     await seedDefaultPortfolioIfEmpty()
     const db = getDb()
 
-    const settingsList = await db.select().from(portfolioSettings).limit(1)
-    const settings = settingsList[0] || {
-      displayCurrency: 'TWD',
-      exchangeRate: 32.5,
-      monthlyInvestmentAmount: 20000,
-      emergencyFundAmount: 0,
-      soxlReserveTargetPercent: 10.0,
-      soxlMaxPositionPercent: 5.0,
-    }
-
+    const settings = await loadPortfolioSettings()
     const allCategories = await db.select().from(categories).orderBy(asc(categories.sortOrder))
     const allAssets = await db.select().from(assets)
 
@@ -28,50 +24,18 @@ export async function GET() {
       assets: allAssets.filter((a) => a.categoryId === cat.id),
     }))
 
-    // Calculate totals
-    const exchangeRate = settings.exchangeRate || 32.5
-    const displayCurrency = settings.displayCurrency || 'TWD'
-
-    let totalPortfolioCost = 0
-    let totalPortfolioValue = 0
-
-    for (const cat of categoriesWithAssets) {
-      for (const a of cat.assets) {
-        const costBasis = a.quantity * a.costPerUnit
-        const currentPrice = a.currentPrice || a.costPerUnit
-        const marketValue = a.quantity * currentPrice
-
-        // Convert to display currency
-        const costConverted =
-          a.currency === displayCurrency
-            ? costBasis
-            : a.currency === 'USD' && displayCurrency === 'TWD'
-            ? costBasis * exchangeRate
-            : costBasis / exchangeRate
-
-        const valueConverted =
-          a.currency === displayCurrency
-            ? marketValue
-            : a.currency === 'USD' && displayCurrency === 'TWD'
-            ? marketValue * exchangeRate
-            : marketValue / exchangeRate
-
-        totalPortfolioCost += costConverted
-        totalPortfolioValue += valueConverted
-      }
-    }
-
-    const unrealizedPnl = totalPortfolioValue - totalPortfolioCost
-    const unrealizedPnlPercent = totalPortfolioCost > 0 ? (unrealizedPnl / totalPortfolioCost) * 100 : 0
+    // 與前端相同的估值口徑：市價 = currentPrice ?? costPerUnit
+    const v = valuePortfolio(categoriesWithAssets, settings.displayCurrency, settings.exchangeRate)
 
     return NextResponse.json({
       settings,
       categories: categoriesWithAssets,
       summary: {
-        totalPortfolioCost,
-        totalPortfolioValue,
-        unrealizedPnl,
-        unrealizedPnlPercent,
+        totalPortfolioCost: v.totalCost,
+        totalPortfolioValue: v.totalValue,
+        unrealizedPnl: v.unrealizedPnl,
+        unrealizedPnlPercent: v.unrealizedPnlPercent,
+        latestPriceUpdatedAt: v.latestPriceUpdatedAt,
         categoriesCount: allCategories.length,
         assetsCount: allAssets.length,
       },
@@ -82,32 +46,50 @@ export async function GET() {
   }
 }
 
+/** 局部更新設定：只改有送來的欄位，其餘保留資料庫原值 */
 export async function PUT(request: Request) {
   try {
     await ensureTablesExist()
-    const body = await request.json()
+    const body = await request.json().catch(() => null)
+    if (!body || typeof body !== 'object') {
+      return NextResponse.json({ error: '請求內容格式錯誤' }, { status: 400 })
+    }
+
+    const existing = await loadPortfolioSettings()
+    const merged = mergePortfolioSettings(existing, body)
     const now = new Date().toISOString()
 
     await sqlite.run(
       `
-      INSERT OR REPLACE INTO portfolio_settings (
+      INSERT INTO portfolio_settings (
         id, display_currency, exchange_rate, monthly_investment_amount,
         emergency_fund_amount, soxl_reserve_target_percent, soxl_max_position_percent, updated_at
       ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        display_currency = excluded.display_currency,
+        exchange_rate = excluded.exchange_rate,
+        monthly_investment_amount = excluded.monthly_investment_amount,
+        emergency_fund_amount = excluded.emergency_fund_amount,
+        soxl_reserve_target_percent = excluded.soxl_reserve_target_percent,
+        soxl_max_position_percent = excluded.soxl_max_position_percent,
+        updated_at = excluded.updated_at
     `,
       [
-        body.displayCurrency || 'TWD',
-        body.exchangeRate ?? 32.5,
-        body.monthlyInvestmentAmount ?? 20000,
-        body.emergencyFundAmount ?? 0,
-        body.soxlReserveTargetPercent ?? 10.0,
-        body.soxlMaxPositionPercent ?? 5.0,
+        merged.displayCurrency,
+        merged.exchangeRate,
+        merged.monthlyInvestmentAmount,
+        merged.emergencyFundAmount,
+        merged.soxlReserveTargetPercent,
+        merged.soxlMaxPositionPercent,
         now,
       ]
     )
 
-    return NextResponse.json({ success: true })
+    return NextResponse.json({ success: true, settings: merged })
   } catch (error: any) {
+    if (error instanceof SettingsValidationError) {
+      return NextResponse.json({ error: error.message }, { status: 400 })
+    }
     console.error('Failed to update portfolio settings:', error)
     return NextResponse.json({ error: error.message || 'Internal Server Error' }, { status: 500 })
   }

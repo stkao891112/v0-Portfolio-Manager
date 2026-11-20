@@ -1,25 +1,23 @@
 'use client'
 
-import { TrendingUp, Layers, Target, AlertTriangle } from 'lucide-react'
+import { TrendingUp, TrendingDown, Layers, Target, AlertTriangle } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/card'
 import { Category } from '@/lib/portfolio-types'
 import { usePortfolioStore } from '@/lib/portfolio-store'
+import { valuePortfolio, valueAsset } from '@/lib/valuation'
+import { QuoteStatus } from './quote-status'
 
 interface PortfolioSummaryProps {
   categories: Category[]
 }
 
 export function PortfolioSummary({ categories }: PortfolioSummaryProps) {
-  const { displayCurrency, convertToDisplayCurrency } = usePortfolioStore()
+  const { displayCurrency, exchangeRate } = usePortfolioStore()
   const currencySymbol = displayCurrency === 'USD' ? '$' : 'NT$'
 
-  const totalValue = categories.reduce(
-    (sum, cat) => sum + cat.assets.reduce((s, a) => {
-      const value = a.quantity * a.costPerUnit
-      return s + convertToDisplayCurrency(value, a.currency || 'USD')
-    }, 0),
-    0
-  )
+  // 共用估值口徑：市價 = 現價（沒有報價時用成本價）
+  const valuation = valuePortfolio(categories, displayCurrency, exchangeRate)
+  const totalValue = valuation.totalValue
   
   const totalAssets = categories.reduce((sum, cat) => sum + cat.assets.length, 0)
   
@@ -32,8 +30,7 @@ export function PortfolioSummary({ categories }: PortfolioSummaryProps) {
   let maxDeviation = 0
   categories.forEach((cat) => {
     cat.assets.forEach((asset) => {
-      const assetValueOriginal = asset.quantity * asset.costPerUnit
-      const assetValue = convertToDisplayCurrency(assetValueOriginal, asset.currency || 'USD')
+      const assetValue = valueAsset(asset, displayCurrency, exchangeRate).marketValue
       const actualPercent = totalValue > 0 ? (assetValue / totalValue) * 100 : 0
       const deviation = Math.abs(actualPercent - asset.targetPercent)
       if (deviation > maxDeviation) {
@@ -44,11 +41,18 @@ export function PortfolioSummary({ categories }: PortfolioSummaryProps) {
 
   const stats = [
     {
-      label: '總資產價值',
+      label: '總資產市值',
       value: `${currencySymbol}${totalValue.toLocaleString(undefined, { maximumFractionDigits: 0 })}`,
       icon: TrendingUp,
       color: 'text-primary',
       bgColor: 'bg-primary/10',
+    },
+    {
+      label: '未實現損益',
+      value: `${valuation.unrealizedPnl >= 0 ? '+' : '-'}${currencySymbol}${Math.abs(valuation.unrealizedPnl).toLocaleString(undefined, { maximumFractionDigits: 0 })}`,
+      icon: valuation.unrealizedPnl >= 0 ? TrendingUp : TrendingDown,
+      color: valuation.unrealizedPnl >= 0 ? 'text-success' : 'text-destructive',
+      bgColor: valuation.unrealizedPnl >= 0 ? 'bg-success/10' : 'bg-destructive/10',
     },
     {
       label: '投資分類',
@@ -74,7 +78,8 @@ export function PortfolioSummary({ categories }: PortfolioSummaryProps) {
   ]
 
   return (
-    <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+    <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+      <QuoteStatus className="col-span-full" />
       {stats.map((stat) => (
         <Card
           key={stat.label}

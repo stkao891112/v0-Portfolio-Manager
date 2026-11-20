@@ -4,6 +4,7 @@ import { categories } from '@/lib/db/schema'
 import { ensureTablesExist } from '@/lib/db/init'
 import { asc } from 'drizzle-orm'
 import { v4 as uuidv4 } from 'uuid'
+import { isValidUuid } from '@/lib/ids'
 
 export async function GET() {
   try {
@@ -18,14 +19,16 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     await ensureTablesExist()
-    const body = await request.json()
+    const body = await request.json().catch(() => ({}))
     const { name, color, targetPercent = 0 } = body
 
-    if (!name) {
-      return NextResponse.json({ error: 'Name is required' }, { status: 400 })
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      return NextResponse.json({ error: '分類名稱不可空白' }, { status: 400 })
     }
 
-    const id = uuidv4()
+    // 前端樂觀更新時已產生 UUID：格式合法且未被使用就沿用，讓前後端 id 一致
+    let id = isValidUuid(body.id) ? body.id : uuidv4()
+    if (await sqlite.get('SELECT id FROM categories WHERE id = ?', [id])) id = uuidv4()
     const now = new Date().toISOString()
 
     const maxOrder = await sqlite.get<{ maxOrder: number | null }>(
@@ -38,7 +41,7 @@ export async function POST(request: Request) {
       INSERT INTO categories (id, name, color, sort_order, target_percent, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `,
-      [id, name, color || 'oklch(0.72 0.19 180)', sortOrder, targetPercent, now, now]
+      [id, name.trim(), color || 'oklch(0.72 0.19 180)', sortOrder, targetPercent, now, now]
     )
 
     return NextResponse.json({ success: true, id })

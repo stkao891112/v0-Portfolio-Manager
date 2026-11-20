@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/select'
 import { Asset, Currency } from '@/lib/portfolio-types'
 import { usePortfolioStore } from '@/lib/portfolio-store'
+import { valueAsset, convertCurrency } from '@/lib/valuation'
 import { toast } from 'sonner'
 
 interface AssetRowProps {
@@ -31,35 +32,40 @@ export function AssetRow({ asset, categoryId, totalPortfolioValue, categoryColor
   const [targetPercent, setTargetPercent] = useState(asset.targetPercent.toString())
   const [currency, setCurrency] = useState<Currency>(asset.currency || 'USD')
 
-  const { updateAsset, removeAsset, restoreAsset, convertToDisplayCurrency, displayCurrency } = usePortfolioStore()
+  const { updateAsset, removeAsset, restoreAsset, displayCurrency, exchangeRate } = usePortfolioStore()
 
-  const assetValueInOriginal = asset.quantity * asset.costPerUnit
-  const assetValue = convertToDisplayCurrency(assetValueInOriginal, asset.currency || 'USD')
+  // 共用估值口徑：市價 = 現價（沒有報價時用成本價）
+  const valuation = valueAsset(asset, displayCurrency, exchangeRate)
+  const assetValue = valuation.marketValue
+  const unitPrice = valuation.unitPrice
   const actualPercent = totalPortfolioValue > 0 ? (assetValue / totalPortfolioValue) * 100 : 0
   const deviation = actualPercent - asset.targetPercent
   const targetValue = (asset.targetPercent / 100) * totalPortfolioValue
   const adjustmentValue = targetValue - assetValue
 
-  // Convert adjustment back to original currency for unit calculation
-  const adjustmentInOriginal = asset.currency === displayCurrency
-    ? adjustmentValue
-    : (asset.currency === 'USD' && displayCurrency === 'TWD')
-      ? adjustmentValue / usePortfolioStore.getState().exchangeRate
-      : adjustmentValue * usePortfolioStore.getState().exchangeRate
-  const adjustmentUnits = asset.costPerUnit > 0 ? adjustmentInOriginal / asset.costPerUnit : 0
+  // 調整金額換回原幣，再除以市價得到建議單位數
+  const adjustmentInOriginal = convertCurrency(adjustmentValue, displayCurrency, asset.currency || 'USD', exchangeRate)
+  const adjustmentUnits = unitPrice > 0 ? adjustmentInOriginal / unitPrice : 0
+  const pnl = valuation.unrealizedPnl
+  const priceLabel = valuation.usesMarketPrice
+    ? `現價 ${(asset.currency || 'USD') === 'USD' ? '$' : 'NT$'}${unitPrice.toLocaleString(undefined, { maximumFractionDigits: 4 })}`
+    : '無報價（以成本估）'
+  const priceTitle = asset.priceUpdatedAt ? `報價時間：${new Date(asset.priceUpdatedAt).toLocaleString('zh-TW')}` : '尚未取得報價'
 
   const currencySymbol = displayCurrency === 'USD' ? '$' : 'NT$'
   const originalCurrencySymbol = (asset.currency || 'USD') === 'USD' ? '$' : 'NT$'
 
-  const handleSave = () => {
-    updateAsset(categoryId, asset.id, {
-      quantity: parseFloat(quantity) || 0,
-      costPerUnit: parseFloat(costPerUnit) || 0,
-      targetPercent: parseFloat(targetPercent) || 0,
-      currency,
-    })
-    toast.success(`已更新標的「${asset.symbol}」`)
+  const handleSave = async () => {
+    const q = parseFloat(quantity) || 0
+    const c = parseFloat(costPerUnit) || 0
+    const t = parseFloat(targetPercent) || 0
+    if (q < 0 || c < 0 || t < 0) {
+      toast.error('數量、成本、目標比例不可為負數')
+      return
+    }
     setIsEditing(false)
+    const ok = await updateAsset(categoryId, asset.id, { quantity: q, costPerUnit: c, targetPercent: t, currency })
+    if (ok) toast.success(`已更新標的「${asset.symbol}」`)
   }
 
   const handleCancel = () => {
@@ -70,17 +76,20 @@ export function AssetRow({ asset, categoryId, totalPortfolioValue, categoryColor
     setIsEditing(false)
   }
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     const category = usePortfolioStore.getState().categories.find((c) => c.id === categoryId)
     const assetIndex = category?.assets.findIndex((a) => a.id === asset.id) ?? -1
+    const snapshot = { ...asset }
 
-    removeAsset(categoryId, asset.id)
+    const ok = await removeAsset(categoryId, asset.id)
+    if (!ok) return
     toast.success(`已刪除標的「${asset.symbol}」`, {
       action: {
         label: '復原',
-        onClick: () => {
-          restoreAsset(categoryId, asset, assetIndex)
-          toast.info(`已復原標的「${asset.symbol}」`)
+        onClick: async () => {
+          if (await restoreAsset(categoryId, snapshot, assetIndex)) {
+            toast.info(`已復原標的「${asset.symbol}」`)
+          }
         },
       },
     })
@@ -243,6 +252,18 @@ export function AssetRow({ asset, categoryId, totalPortfolioValue, categoryColor
                 <p className="font-mono font-medium text-foreground">
                   {asset.quantity.toLocaleString()} × {originalCurrencySymbol}{asset.costPerUnit.toLocaleString()}
                 </p>
+                <p
+                  className={`font-mono text-[11px] ${valuation.usesMarketPrice ? 'text-muted-foreground' : 'text-warning'}`}
+                  title={priceTitle}
+                >
+                  {priceLabel}
+                  {valuation.usesMarketPrice && valuation.costValue > 0 && (
+                    <span className={pnl >= 0 ? 'ml-1 text-success' : 'ml-1 text-destructive'}>
+                      {pnl >= 0 ? '+' : ''}
+                      {valuation.unrealizedPnlPercent.toFixed(1)}%
+                    </span>
+                  )}
+                </p>
               </div>
               <div className="text-right">
                 <p className="text-[11px] text-muted-foreground mb-0.5">現值 / 實際佔比</p>
@@ -259,7 +280,7 @@ export function AssetRow({ asset, categoryId, totalPortfolioValue, categoryColor
             </div>
 
             {/* 再平衡建議調整膠囊 */}
-            {totalPortfolioValue > 0 && asset.costPerUnit > 0 && (
+            {totalPortfolioValue > 0 && unitPrice > 0 && (
               <div
                 className={`flex items-center justify-between rounded-md px-2.5 py-1.5 text-xs font-medium border ${
                   adjustmentValue >= 0
@@ -362,6 +383,18 @@ export function AssetRow({ asset, categoryId, totalPortfolioValue, categoryColor
               <span className="font-mono">{asset.quantity.toLocaleString()}</span>
               <span className="mx-1">×</span>
               <span className="font-mono">{originalCurrencySymbol}{asset.costPerUnit.toLocaleString()}</span>
+              <div
+                className={`font-mono text-[11px] ${valuation.usesMarketPrice ? '' : 'text-warning'}`}
+                title={priceTitle}
+              >
+                {priceLabel}
+                {valuation.usesMarketPrice && valuation.costValue > 0 && (
+                  <span className={pnl >= 0 ? 'ml-1 text-success' : 'ml-1 text-destructive'}>
+                    {pnl >= 0 ? '+' : ''}
+                    {valuation.unrealizedPnlPercent.toFixed(1)}%
+                  </span>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -379,7 +412,7 @@ export function AssetRow({ asset, categoryId, totalPortfolioValue, categoryColor
 
         {/* Adjustment */}
         <div className="col-span-2">
-          {totalPortfolioValue > 0 && asset.costPerUnit > 0 ? (
+          {totalPortfolioValue > 0 && unitPrice > 0 ? (
             <div className={`text-xs ${adjustmentValue >= 0 ? 'text-success' : 'text-destructive'}`}>
               <div className="font-medium font-mono">
                 {adjustmentValue >= 0 ? '+' : ''}{currencySymbol}{Math.abs(adjustmentValue).toLocaleString(undefined, { maximumFractionDigits: 0 })}

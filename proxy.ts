@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { SESSION_COOKIE, getAppPassword, isAuthRequired, verifySessionToken } from '@/lib/auth'
+import { checkSameOrigin } from '@/lib/security/same-origin'
 
 // 不需要登入就能打開的路徑
 const PUBLIC_PATHS = ['/login', '/api/auth/login']
@@ -10,9 +11,18 @@ const PUBLIC_PATHS = ['/login', '/api/auth/login']
  * - Vercel：沒登入的網頁導到 /login；沒登入的 API 回 401
  */
 export async function proxy(request: NextRequest) {
+  const { pathname, search } = request.nextUrl
+
+  // 寫入 API 一律做同源檢查（本機 dev 沒登入保護，更需要擋跨站請求）
+  if (pathname.startsWith('/api/')) {
+    const check = checkSameOrigin(request)
+    if (!check.ok) {
+      return NextResponse.json({ error: check.reason ?? '跨站請求已阻擋' }, { status: 403 })
+    }
+  }
+
   if (!isAuthRequired()) return NextResponse.next()
 
-  const { pathname, search } = request.nextUrl
   if (PUBLIC_PATHS.includes(pathname)) return NextResponse.next()
 
   const password = getAppPassword()

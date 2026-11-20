@@ -28,6 +28,8 @@ import {
   CheckCircle2,
 } from 'lucide-react'
 import { Category, Currency } from '@/lib/portfolio-types'
+import { valuePortfolio } from '@/lib/valuation'
+import { QuoteStatus } from '@/components/quote-status'
 
 interface OverviewDashboardProps {
   categories: Category[]
@@ -46,50 +48,19 @@ export function OverviewDashboard({
   const { data: btc } = useSWR('/api/strategy/btc', swrFetcher, { refreshInterval: 60_000 })
   const soxlSignal = soxl?.strategyState?.activeSignal
   const btcMain = btc?.allocation?.decisions?.find((d: any) => d.light !== 'gray') ?? btc?.allocation?.decisions?.[0]
-  // Calculate aggregate metrics
-  let totalCost = 0
-  let totalValue = 0
+  // 共用估值口徑（與資產配置頁、SOXL 策略權重分母一致）
+  const valuation = valuePortfolio(categories, displayCurrency, exchangeRate)
+  const totalCost = valuation.totalCost
+  const totalValue = valuation.totalValue
+  const pnl = valuation.unrealizedPnl
+  const pnlPercent = valuation.unrealizedPnlPercent
 
-  const allAssets = categories.flatMap((c) => c.assets)
-
-  for (const a of allAssets) {
-    const cost = a.quantity * a.costPerUnit
-    const price = a.currentPrice || a.costPerUnit
-    const value = a.quantity * price
-
-    const costConv =
-      a.currency === displayCurrency
-        ? cost
-        : a.currency === 'USD' && displayCurrency === 'TWD'
-        ? cost * exchangeRate
-        : cost / exchangeRate
-
-    const valConv =
-      a.currency === displayCurrency
-        ? value
-        : a.currency === 'USD' && displayCurrency === 'TWD'
-        ? value * exchangeRate
-        : value / exchangeRate
-
-    totalCost += costConv
-    totalValue += valConv
-  }
-
-  const pnl = totalValue - totalCost
-  const pnlPercent = totalCost > 0 ? (pnl / totalCost) * 100 : 0
-
-  // SOXL Reserve stats
+  // SOXL Reserve stats（上限與目標來自後端策略參數，預設 10%）
   const soxlCategory = categories.find((c) => c.name.includes('SOXL') || c.name.includes('預備金'))
-  const soxlReserveTarget = 10 // 10%
+  const soxlMaxPercent: number = soxl?.config?.maxPositionPercent ?? soxl?.strategyState?.maxAllowedWeightPercent ?? 10
+  const soxlReserveTarget = soxlCategory?.targetPercent ?? soxlMaxPercent
   const soxlActualPercent =
-    totalValue > 0 && soxlCategory
-      ? (soxlCategory.assets.reduce((sum, a) => {
-          const val = a.quantity * (a.currentPrice || a.costPerUnit)
-          return sum + (a.currency === displayCurrency ? val : a.currency === 'USD' ? val * exchangeRate : val / exchangeRate)
-        }, 0) /
-          totalValue) *
-        100
-      : 0
+    totalValue > 0 && soxlCategory ? ((valuation.categoryValues[soxlCategory.id] ?? 0) / totalValue) * 100 : 0
 
   const currencySymbol = displayCurrency === 'USD' ? '$' : 'NT$'
 
@@ -187,7 +158,7 @@ export function OverviewDashboard({
               {soxlActualPercent.toFixed(1)}% / {soxlReserveTarget}%
             </div>
             <p className="text-xs text-muted-foreground mt-1">
-              SOXL 持倉上限 10%（目前持倉 {(soxl?.strategyState?.soxlPortfolioWeightPercent ?? 0).toFixed(1)}%）
+              SOXL 持倉上限 {soxlMaxPercent}%（目前持倉 {(soxl?.strategyState?.soxlPortfolioWeightPercent ?? 0).toFixed(1)}%）
             </p>
           </CardContent>
         </Card>
@@ -276,11 +247,9 @@ export function OverviewDashboard({
             </div>
           </CardHeader>
           <CardContent className="pt-4 space-y-3">
+            <QuoteStatus />
             {categories.map((cat) => {
-              const catVal = cat.assets.reduce((sum, a) => {
-                const val = a.quantity * (a.currentPrice || a.costPerUnit)
-                return sum + (a.currency === displayCurrency ? val : a.currency === 'USD' ? val * exchangeRate : val / exchangeRate)
-              }, 0)
+              const catVal = valuation.categoryValues[cat.id] ?? 0
               const actualPct = totalValue > 0 ? (catVal / totalValue) * 100 : 0
               const targetPct = cat.targetPercent || cat.assets.reduce((s, a) => s + (a.targetPercent || 0), 0)
               const diff = actualPct - targetPct

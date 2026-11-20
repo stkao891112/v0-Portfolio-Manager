@@ -9,28 +9,37 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge'
 import { Settings, Database, ArrowRightLeft, Shield, Save, CheckCircle2, AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
+import { usePortfolioStore } from '@/lib/portfolio-store'
 
 export function SystemSettings() {
   const [displayCurrency, setDisplayCurrency] = useState('TWD')
   const [exchangeRate, setExchangeRate] = useState('32.5')
   const [monthlyInvestment, setMonthlyInvestment] = useState('20000')
   const [emergencyFund, setEmergencyFund] = useState('0')
+  const [soxlMaxPosition, setSoxlMaxPosition] = useState('10')
   const [saving, setSaving] = useState(false)
+  const applySettings = usePortfolioStore((s) => s.applySettings)
+  const refreshAll = usePortfolioStore((s) => s.refreshAll)
   const [migrationStatus, setMigrationStatus] = useState<string | null>(null)
 
   useEffect(() => {
     // Load current settings from /api/portfolio
-    fetch('/api/portfolio')
-      .then((res) => res.json())
+    fetch('/api/portfolio', { cache: 'no-store' })
+      .then(async (res) => {
+        const data = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`)
+        return data
+      })
       .then((data) => {
         if (data.settings) {
           setDisplayCurrency(data.settings.displayCurrency || 'TWD')
-          setExchangeRate(String(data.settings.exchangeRate || 32.5))
-          setMonthlyInvestment(String(data.settings.monthlyInvestmentAmount || 20000))
-          setEmergencyFund(String(data.settings.emergencyFundAmount || 0))
+          setExchangeRate(String(data.settings.exchangeRate ?? 32.5))
+          setMonthlyInvestment(String(data.settings.monthlyInvestmentAmount ?? 20000))
+          setEmergencyFund(String(data.settings.emergencyFundAmount ?? 0))
+          setSoxlMaxPosition(String(data.settings.soxlMaxPositionPercent ?? 10))
         }
       })
-      .catch((err) => console.error('Failed to load settings:', err))
+      .catch((err) => toast.error('讀取系統設定失敗', { description: err.message }))
   }, [])
 
   const handleSaveSettings = async () => {
@@ -44,12 +53,16 @@ export function SystemSettings() {
           exchangeRate: Number(exchangeRate),
           monthlyInvestmentAmount: Number(monthlyInvestment),
           emergencyFundAmount: Number(emergencyFund),
+          soxlMaxPositionPercent: Number(soxlMaxPosition),
         }),
       })
+      const data = await res.json().catch(() => ({}))
       if (res.ok) {
+        // 同步回全域 store，其他頁面的幣別與匯率立即一致
+        applySettings({ displayCurrency: data.settings?.displayCurrency, exchangeRate: data.settings?.exchangeRate })
         toast.success('系統設定已成功儲存至資料庫')
       } else {
-        toast.error('儲存失敗')
+        toast.error('儲存失敗', { description: data?.error })
       }
     } catch (err) {
       toast.error('無法連線至後端伺服器')
@@ -75,7 +88,7 @@ export function SystemSettings() {
       }
 
       const confirmed = window.confirm(
-        `偵測到舊版 LocalStorage 內有 ${categories.length} 個分類，是否立即遷移並覆寫至資料庫？`
+        `偵測到舊版 LocalStorage 內有 ${categories.length} 個分類。\n\n注意：匯入會「清空並覆蓋」資料庫現有的所有分類與資產（交易紀錄保留）。確定要繼續嗎？`
       )
       if (!confirmed) return
 
@@ -86,12 +99,14 @@ export function SystemSettings() {
           categories,
           displayCurrency: parsed?.state?.displayCurrency || 'TWD',
           exchangeRate: parsed?.state?.exchangeRate || 32.5,
+          confirmOverwrite: true,
         }),
       })
 
-      const result = await res.json()
+      const result = await res.json().catch(() => ({}))
       if (res.ok) {
-        toast.success('成功遷移資料！請重新整理頁面以查看最新資產')
+        await refreshAll()
+        toast.success('成功遷移資料！已重新載入最新資產')
         setMigrationStatus(`已成功遷移 ${result.migratedCategories} 個分類至資料庫`)
       } else {
         toast.error(`遷移失敗: ${result.error}`)
@@ -170,6 +185,22 @@ export function SystemSettings() {
               />
               <p className="text-[11px] text-amber-400">
                 嚴格規定：生活緊急預備金不可納入 SOXL 預備金或任何投資組合。
+              </p>
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs">SOXL 持倉上限（占總資產 %）</Label>
+              <Input
+                type="number"
+                step="0.5"
+                min="0.5"
+                max="100"
+                value={soxlMaxPosition}
+                onChange={(e) => setSoxlMaxPosition(e.target.value)}
+                className="text-xs font-mono"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                定案預設 10%（每批 2.5% × 4 批）；改上限時每批自動 = 上限 ÷ 4。實盤與回測共用此設定。
               </p>
             </div>
 

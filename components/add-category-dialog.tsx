@@ -21,14 +21,14 @@ export function AddCategoryDialog() {
   const [name, setName] = useState('')
   const addCategory = usePortfolioStore((state) => state.addCategory)
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     if (name.trim()) {
       const categoryName = name.trim()
-      addCategory(categoryName)
-      toast.success(`已建立分類「${categoryName}」`)
       setName('')
       setOpen(false)
+      const ok = await addCategory(categoryName)
+      if (ok) toast.success(`已建立分類「${categoryName}」`)
     }
   }
 

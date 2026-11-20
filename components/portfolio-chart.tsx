@@ -4,6 +4,7 @@ import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recha
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Category } from '@/lib/portfolio-types'
 import { usePortfolioStore } from '@/lib/portfolio-store'
+import { valueAsset } from '@/lib/valuation'
 
 interface PortfolioChartProps {
   categories: Category[]
@@ -11,13 +12,13 @@ interface PortfolioChartProps {
 }
 
 export function PortfolioChart({ categories, type }: PortfolioChartProps) {
-  const { displayCurrency, convertToDisplayCurrency } = usePortfolioStore()
+  const { displayCurrency, exchangeRate } = usePortfolioStore()
   const currencySymbol = displayCurrency === 'USD' ? '$' : 'NT$'
 
   const data = categories.flatMap((category) =>
     category.assets.map((asset) => {
-      const originalValue = asset.quantity * asset.costPerUnit
-      const convertedValue = convertToDisplayCurrency(originalValue, asset.currency || 'USD')
+      // 共用估值口徑：市價 = 現價（沒有報價時用成本價）
+      const convertedValue = valueAsset(asset, displayCurrency, exchangeRate).marketValue
       return {
         name: asset.symbol,
         value: type === 'actual' 

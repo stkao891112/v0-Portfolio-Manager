@@ -251,4 +251,105 @@ describe('SOXL Sniper Strategy State Machine Tests', () => {
     expect(state.activeSignal.title).toContain('第 2 批出場')
     expect(state.activeSignal.suggestedAction).toContain('100 股')
   })
+
+  it('第 4 批只靠「站回均線突破」解鎖、但本週 K 未收盤 → 降為需人工判斷（不硬寫 isConfirmed = true）', () => {
+    const common = {
+      soxlQuote: mockSoxlQuote,
+      totalPortfolioValue: 100000,
+      soxlQuantity: 0,
+      soxlCostBasis: 0,
+      cashAvailable: 10000,
+      executedTranches: [1, 2, 3],
+      maxDrawdownSincePeak: -45,
+      sniperActivatedAt: '2026-11-05T00:00:00Z',
+      now: new Date('2026-11-20'),
+      macroVerdict: 'PANIC' as const,
+    }
+    const intraday = evaluateSoxlSniperStrategy({
+      ...common,
+      analysis: { ...baseAnalysis, drawdownPercent: -30, isAboveMa10w: true, isBreakout4wHigh: true, isCurrentBarConfirmed: false },
+    })
+    expect(intraday.tranches[3].status).toBe('CANDIDATE')
+    expect(intraday.tranches[3].unlockedBy).toBe('breakout')
+    expect(intraday.activeSignal.type).toBe('MANUAL_REVIEW_REQUIRED')
+    expect(intraday.isCurrentBarConfirmed).toBe(false)
+    expect(intraday.riskChecks.find((r) => r.key === 'no_intraday_signal')?.status).toBe('pass')
+
+    const closed = evaluateSoxlSniperStrategy({
+      ...common,
+      analysis: { ...baseAnalysis, drawdownPercent: -30, isAboveMa10w: true, isBreakout4wHigh: true, isCurrentBarConfirmed: true },
+    })
+    expect(closed.activeSignal.type).toBe('BUY_CANDIDATE')
+  })
+
+  it('6 條風控紀律依實際資料計算（不再全部寫死通過）', () => {
+    const state = evaluateSoxlSniperStrategy({
+      analysis: baseAnalysis,
+      soxlQuote: mockSoxlQuote,
+      totalPortfolioValue: 100000,
+      soxlQuantity: 400, // 12% > 10%
+      soxlCostBasis: 30,
+      cashAvailable: 5000,
+      unassignedBuysThisCycle: 1,
+    })
+    expect(state.riskChecks).toHaveLength(6)
+    const by = Object.fromEntries(state.riskChecks.map((r) => [r.key, r.status]))
+    expect(by.max_position).toBe('fail')
+    expect(by.tranche_discipline).toBe('warn')
+    expect(by.emergency_fund).toBe('warn')
+    expect(by.no_leverage).toBe('manual')
+    expect(by.human_confirmation).toBe('pass')
+
+    const ok = evaluateSoxlSniperStrategy({
+      analysis: baseAnalysis,
+      soxlQuote: mockSoxlQuote,
+      totalPortfolioValue: 100000,
+      soxlQuantity: 100, // 3%
+      soxlCostBasis: 30,
+      cashAvailable: 5000,
+      executedTranches: [1],
+      emergencyFundAmount: 300000,
+    })
+    const by2 = Object.fromEntries(ok.riskChecks.map((r) => [r.key, r.status]))
+    expect(by2.max_position).toBe('pass')
+    expect(by2.tranche_discipline).toBe('pass')
+    expect(by2.emergency_fund).toBe('pass')
+  })
+
+  it('建議股數：買進 = 每批 2.5% ÷ 現價（不超過上限空間）；停利 = 本輪建倉量的 1/3', () => {
+    const buy = evaluateSoxlSniperStrategy({
+      analysis: { ...baseAnalysis, drawdownPercent: -42 },
+      soxlQuote: mockSoxlQuote,
+      totalPortfolioValue: 100000,
+      soxlQuantity: 0,
+      soxlCostBasis: 0,
+      cashAvailable: 10000,
+      macroVerdict: 'PANIC',
+    })
+    expect(buy.suggestedBuyQuantity).toBe(Math.floor(2500 / 30))
+
+    const nearCap = evaluateSoxlSniperStrategy({
+      analysis: { ...baseAnalysis, drawdownPercent: -42 },
+      soxlQuote: mockSoxlQuote,
+      totalPortfolioValue: 100000,
+      soxlQuantity: 280, // 8.4% → 只剩 1.6% 空間
+      soxlCostBasis: 30,
+      cashAvailable: 10000,
+      macroVerdict: 'PANIC',
+    })
+    expect(nearCap.suggestedBuyQuantity).toBe(Math.floor(1600 / 30))
+
+    const sell = evaluateSoxlSniperStrategy({
+      analysis: baseAnalysis,
+      soxlQuote: { ...mockSoxlQuote, price: 60 },
+      totalPortfolioValue: 1000000,
+      soxlQuantity: 300,
+      soxlCostBasis: 30,
+      cashAvailable: 10000,
+      cycleBoughtQty: 300,
+      cycleSoldQty: 0,
+    })
+    expect(sell.exitTierReady).toBe(1)
+    expect(sell.suggestedSellQuantity).toBe(100)
+  })
 })

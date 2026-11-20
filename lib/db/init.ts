@@ -1,4 +1,15 @@
 import { sqlite, type Statement } from './client'
+import { DEFAULT_SOXL_CONFIG, buildSoxlStrategySettingsJson } from '../strategies/config'
+
+/** portfolio_settings 的預設值（API 與種子資料共用） */
+export const DEFAULT_PORTFOLIO_SETTINGS = {
+  displayCurrency: 'TWD' as 'TWD' | 'USD',
+  exchangeRate: 32.5,
+  monthlyInvestmentAmount: 20000,
+  emergencyFundAmount: 0,
+  soxlReserveTargetPercent: DEFAULT_SOXL_CONFIG.maxPositionPercent,
+  soxlMaxPositionPercent: DEFAULT_SOXL_CONFIG.maxPositionPercent,
+}
 
 // 同一個執行環境只建表一次（雲端資料庫每次查詢都要走網路，避免重複送出建表指令）
 let tablesReady: Promise<void> | null = null
@@ -22,7 +33,7 @@ async function createTables(): Promise<void> {
       monthly_investment_amount REAL NOT NULL DEFAULT 20000,
       emergency_fund_amount REAL NOT NULL DEFAULT 0,
       soxl_reserve_target_percent REAL NOT NULL DEFAULT 10.0,
-      soxl_max_position_percent REAL NOT NULL DEFAULT 5.0,
+      soxl_max_position_percent REAL NOT NULL DEFAULT 10.0,
       updated_at TEXT NOT NULL
     );
 
@@ -65,6 +76,7 @@ async function createTables(): Promise<void> {
       exchange_rate REAL NOT NULL DEFAULT 1.0,
       realized_pnl REAL,
       notes TEXT,
+      strategy_tranche INTEGER,
       created_at TEXT NOT NULL,
       FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE SET NULL
     );
@@ -117,7 +129,70 @@ async function createTables(): Promise<void> {
       is_closed INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS app_migrations (
+      id TEXT PRIMARY KEY,
+      applied_at TEXT NOT NULL
+    );
   `)
+  await runMigrations()
+}
+
+/**
+ * 既有資料庫的結構／資料升級（每個 id 只執行一次，記錄在 app_migrations）
+ */
+export async function runMigrations(): Promise<void> {
+  // 1. transactions 加 strategy_tranche 欄位（舊資料庫建表時沒有）
+  const cols = await sqlite.all<{ name: string }>('PRAGMA table_info(transactions)')
+  if (!cols.some((c) => c.name === 'strategy_tranche')) {
+    try {
+      await sqlite.run('ALTER TABLE transactions ADD COLUMN strategy_tranche INTEGER')
+    } catch (err: any) {
+      // 另一個執行環境剛好同時加好了欄位 → 忽略
+      if (!/duplicate column/i.test(String(err?.message))) throw err
+    }
+  }
+
+  const applied = new Set(
+    (await sqlite.all<{ id: string }>('SELECT id FROM app_migrations')).map((r) => r.id)
+  )
+  const now = new Date().toISOString()
+
+  // 2. 2026-11-20 定案：SOXL 上限 10%（= 2.5% × 4 批）。
+  //    舊版預設把 soxl_max_position_percent 寫成 5.0（介面上沒有地方能改，屬於舊預設值而非使用者設定），
+  //    strategy_settings 的 soxl_sniper 仍是每批 1.25% 的舊參數 → 一次性升級為新預設。
+  const MIGRATION_SOXL_10 = '2026-11-20-soxl-10pct'
+  if (!applied.has(MIGRATION_SOXL_10)) {
+    const statements: Statement[] = [
+      {
+        sql: 'UPDATE portfolio_settings SET soxl_max_position_percent = ?, updated_at = ? WHERE soxl_max_position_percent = 5.0',
+        args: [DEFAULT_SOXL_CONFIG.maxPositionPercent, now],
+      },
+    ]
+    const row = await sqlite.get<{ config_json: string }>(
+      "SELECT config_json FROM strategy_settings WHERE id = 'soxl_sniper'"
+    )
+    let legacy = false
+    if (row) {
+      try {
+        const parsed = JSON.parse(row.config_json)
+        legacy =
+          parsed.maxPositionPercent === undefined &&
+          Array.isArray(parsed.tranches) &&
+          parsed.tranches.some((t: any) => t?.allocationPercent === 1.25)
+      } catch {
+        legacy = true
+      }
+    }
+    if (legacy) {
+      statements.push({
+        sql: "UPDATE strategy_settings SET config_json = ?, updated_at = ? WHERE id = 'soxl_sniper'",
+        args: [JSON.stringify(buildSoxlStrategySettingsJson()), now],
+      })
+    }
+    statements.push({ sql: 'INSERT OR IGNORE INTO app_migrations (id, applied_at) VALUES (?, ?)', args: [MIGRATION_SOXL_10, now] })
+    await sqlite.batch(statements)
+  }
 }
 
 // 同一個執行環境同時有多個請求時，只跑一次預設資料建立
@@ -147,12 +222,21 @@ async function seedIfEmpty(): Promise<boolean> {
   // 1. Seed portfolio_settings
   statements.push({
     sql: `
-      INSERT OR REPLACE INTO portfolio_settings (
+      INSERT OR IGNORE INTO portfolio_settings (
         id, display_currency, exchange_rate, monthly_investment_amount,
         emergency_fund_amount, soxl_reserve_target_percent, soxl_max_position_percent, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `,
-    args: ['default', 'TWD', 32.5, 20000, 0, 10.0, 5.0, now],
+    args: [
+      'default',
+      DEFAULT_PORTFOLIO_SETTINGS.displayCurrency,
+      DEFAULT_PORTFOLIO_SETTINGS.exchangeRate,
+      DEFAULT_PORTFOLIO_SETTINGS.monthlyInvestmentAmount,
+      DEFAULT_PORTFOLIO_SETTINGS.emergencyFundAmount,
+      DEFAULT_PORTFOLIO_SETTINGS.soxlReserveTargetPercent,
+      DEFAULT_PORTFOLIO_SETTINGS.soxlMaxPositionPercent,
+      now,
+    ],
   })
 
   // 2. Seed default categories and assets according to user/ChatGPT blueprint
@@ -182,7 +266,7 @@ async function seedIfEmpty(): Promise<boolean> {
       sortOrder: 3,
       targetPercent: 10,
       assets: [
-        { symbol: 'SOXL', name: '半導體三倍槓桿 (最大5%)', targetPercent: 0, currency: 'USD' },
+        { symbol: 'SOXL', name: `半導體三倍槓桿 (最大${DEFAULT_SOXL_CONFIG.maxPositionPercent}%)`, targetPercent: 0, currency: 'USD' },
         { symbol: 'SOXL_CASH_BUFFER', name: '美元預備金現金緩衝', targetPercent: 10, currency: 'USD' },
       ],
     },
@@ -235,8 +319,9 @@ async function seedIfEmpty(): Promise<boolean> {
   }
 
   // 3. Seed Strategy Settings
+  // INSERT OR IGNORE：不覆蓋使用者已調整過的策略參數
   const insertStrategySettingSql = `
-    INSERT OR REPLACE INTO strategy_settings (id, strategy_name, config_json, updated_at)
+    INSERT OR IGNORE INTO strategy_settings (id, strategy_name, config_json, updated_at)
     VALUES (?, ?, ?, ?)
   `
 
@@ -247,22 +332,7 @@ async function seedIfEmpty(): Promise<boolean> {
   insertStrategySetting(
     'soxl_sniper',
     'SOXL 熊市狙擊策略',
-    JSON.stringify({
-      cyclePeakSoxx: 320.0,
-      cycleAnchorDate: '2024-07-11',
-      tranches: [
-        { tranche: 1, triggerDrawdown: -40, allocationPercent: 1.25, status: 'WAITING', label: '第一批候選區 (-40%)' },
-        { tranche: 2, triggerDrawdown: -45, allocationPercent: 1.25, status: 'WAITING', label: '第二批候選區 (-45%)' },
-        { tranche: 3, triggerDrawdown: -50, allocationPercent: 1.25, status: 'WAITING', label: '第三批候選區 (-50%)' },
-        { tranche: 4, triggerDrawdown: -40, requireMa10Break: true, allocationPercent: 1.25, status: 'WAITING', label: '第四批突破買入 (站回10W MA)' },
-      ],
-      exits: [
-        { tier: 1, returnRate: 0.8, sellRatio: 0.3333, label: '獲利 +80% (賣出 1/3)' },
-        { tier: 2, returnRate: 1.5, cumulativeSellRatio: 0.6667, label: '獲利 +150% (累計賣出 2/3)' },
-        { tier: 3, returnRate: 2.0, sellAll: true, label: '獲利 +200% (全數清空)' },
-      ],
-      stopLossMa40Weeks: 2, // SOXX 連續兩週跌破 40W MA 警告退出
-    }),
+    JSON.stringify(buildSoxlStrategySettingsJson()),
     now
   )
 
