@@ -128,6 +128,35 @@ export function getYahooCloses(symbol: string, range: string, interval: '1d' | '
   })
 }
 
+export interface OhlcPoint {
+  t: string
+  c: number // 收盤
+  l: number // 盤中最低
+  h: number // 盤中最高
+}
+
+/** Yahoo 日 K（含盤中高低點），用來判斷「盤中曾跌到 -40%」 */
+export function getYahooDaily(symbol: string, range: string, ttl = 15 * 60) {
+  return cached<OhlcPoint[]>(`yahoo-ohlc:${symbol}:${range}`, ttl, 'Yahoo Finance', async () => {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?range=${range}&interval=1d`
+    const data = await getJson(url)
+    const r = data?.chart?.result?.[0]
+    if (!r?.timestamp) throw new Error(`Yahoo 無資料 ${symbol}`)
+    const q = r.indicators?.quote?.[0] || {}
+    const out: OhlcPoint[] = []
+    r.timestamp.forEach((ts: number, i: number) => {
+      const c = q.close?.[i]
+      const l = q.low?.[i]
+      const h = q.high?.[i]
+      if ([c, l, h].every((v) => v != null && Number.isFinite(v) && v > 0)) {
+        out.push({ t: new Date(ts * 1000).toISOString(), c, l, h })
+      }
+    })
+    if (!out.length) throw new Error(`Yahoo 無日 K ${symbol}`)
+    return out
+  })
+}
+
 // ---------------------------------------------------------------------------
 // 加密貨幣
 // ---------------------------------------------------------------------------

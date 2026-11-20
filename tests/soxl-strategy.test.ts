@@ -182,4 +182,41 @@ describe('SOXL Sniper Strategy State Machine Tests', () => {
     })
     expect(state.activeSignal.type).toBe('MANUAL_REVIEW_REQUIRED')
   })
+
+  it('狙擊期：盤中曾跌到 -40% 後反彈，第 1 批仍可買，第 2 批滿 4 週才解鎖', () => {
+    const common = {
+      analysis: { ...baseAnalysis, drawdownPercent: -30, isCurrentBarConfirmed: false },
+      soxlQuote: mockSoxlQuote,
+      totalPortfolioValue: 100000,
+      soxlQuantity: 0,
+      soxlCostBasis: 0,
+      cashAvailable: 10000,
+      maxDrawdownSincePeak: -40.1,
+      sniperActivatedAt: '2026-11-05T00:00:00Z',
+      macroVerdict: 'PANIC' as const,
+    }
+    const week2 = evaluateSoxlSniperStrategy({ ...common, now: new Date('2026-11-20') })
+    expect(week2.tranches.map((t) => t.status)).toEqual(['CANDIDATE', 'WAITING', 'WAITING', 'WAITING'])
+    expect(week2.activeSignal.type).toBe('BUY_CANDIDATE')
+
+    const week5 = evaluateSoxlSniperStrategy({ ...common, executedTranches: [1], now: new Date('2026-12-10') })
+    expect(week5.tranches.map((t) => t.status)).toEqual(['EXECUTED', 'CANDIDATE', 'WAITING', 'WAITING'])
+  })
+
+  it('狙擊期：跌到 -60% 時第 2、3 批提前解鎖', () => {
+    const state = evaluateSoxlSniperStrategy({
+      analysis: { ...baseAnalysis, drawdownPercent: -58 },
+      soxlQuote: mockSoxlQuote,
+      totalPortfolioValue: 100000,
+      soxlQuantity: 0,
+      soxlCostBasis: 0,
+      cashAvailable: 10000,
+      maxDrawdownSincePeak: -61,
+      sniperActivatedAt: '2026-11-05T00:00:00Z',
+      now: new Date('2026-11-12'),
+      macroVerdict: 'PANIC',
+    })
+    expect(state.tranches.slice(0, 3).every((t) => t.status === 'CANDIDATE')).toBe(true)
+    expect(state.tranches[3].status).toBe('WAITING')
+  })
 })

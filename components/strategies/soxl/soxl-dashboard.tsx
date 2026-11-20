@@ -391,14 +391,16 @@ export function SoxlDashboard() {
                 <div className="rounded-lg border border-border/30 bg-background/40 p-2">
                   <div className="text-[11px] text-muted-foreground">目前回落</div>
                   <div className="font-mono font-bold text-rose-400">{drawdown.toFixed(1)}%</div>
-                  <div className="text-[10px] text-muted-foreground">
-                    {drawdown <= -40 ? '已進入狙擊區' : `距 -40% 還差 ${(drawdown + 40).toFixed(1)} 點`}
-                  </div>
+                  <div className="text-[10px] text-muted-foreground">從日收盤高點算</div>
                 </div>
                 <div className="rounded-lg border border-border/30 bg-background/40 p-2">
-                  <div className="text-[11px] text-muted-foreground">本輪最深回落</div>
+                  <div className="text-[11px] text-muted-foreground">盤中最深回落</div>
                   <div className="font-mono font-bold text-foreground">{data.cycle?.maxDrawdownSincePeak?.toFixed(1)}%</div>
-                  <div className="text-[10px] text-muted-foreground">第 4 批需曾到 -40%</div>
+                  <div className={`text-[10px] ${data.cycle?.sniperActivatedAt ? 'font-bold text-emerald-400' : 'text-muted-foreground'}`}>
+                    {data.cycle?.sniperActivatedAt
+                      ? `狙擊期 ${data.cycle.sniperActivatedAt.slice(0, 10)} 啟動`
+                      : `距啟動（-40%）還差 ${(data.cycle?.maxDrawdownSincePeak + 40).toFixed(1)} 點`}
+                  </div>
                 </div>
               </div>
             </CardContent>
@@ -482,7 +484,7 @@ export function SoxlDashboard() {
               </Badge>
             </CardTitle>
             <CardDescription className="text-xs">
-              每批只能觸發一次，未達止跌條件前需人工確認。
+              盤中曾跌到 -40% 即啟動狙擊期，之後每 4 週解鎖一批；跌更深或站回均線會提前解鎖。每批需人工確認。
             </CardDescription>
           </CardHeader>
           <CardContent className="pt-4 space-y-3">

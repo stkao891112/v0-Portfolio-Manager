@@ -5,6 +5,10 @@ import type { MacroVerdict } from './macro-check'
 /** 每批占總資產 %、累計上限 %（10% 預備金分 4 批） */
 export const SOXL_TRANCHE_PERCENT = 2.5
 export const SOXL_MAX_WEIGHT_PERCENT = 10.0
+/** 盤中回落達此幅度即啟動狙擊期 */
+export const SOXL_ACTIVATE_DRAWDOWN = -40
+/** 啟動後每隔幾週解鎖下一批 */
+export const SOXL_INTERVAL_WEEKS = 4
 
 export type SignalType =
   | 'BUY_CANDIDATE'
@@ -16,7 +20,7 @@ export type SignalType =
   | 'MANUAL_REVIEW_REQUIRED'
 
 export interface TrancheState {
-  tranche: 1 | 2 | 3 | 4
+  tranche: number
   allocationPercent: number // 占總資產 %
   status: 'WAITING' | 'CANDIDATE' | 'CONFIRMED_PENDING_EXECUTION' | 'EXECUTED'
   triggerCondition: string
@@ -63,8 +67,11 @@ export function evaluateSoxlSniperStrategy(params: {
   soxlCostBasis: number
   cashAvailable: number
   executedTranches?: number[]
-  /** 本輪高點以來最深的回落（%，負數），第 4 批要求曾經跌到 -40% */
+  /** 本輪高點以來最深的回落（%，負數，用盤中低點） */
   maxDrawdownSincePeak?: number
+  /** 狙擊期啟動日（盤中第一次跌到 -40% 的日期） */
+  sniperActivatedAt?: string | null
+  now?: Date
   macroVerdict?: MacroVerdict
   /** SOXX 報價或週 K 使用過期快取 */
   soxxStale?: boolean
@@ -101,49 +108,44 @@ export function evaluateSoxlSniperStrategy(params: {
     )
   }
 
-  // 1. Evaluate 4 Tranches
-  const tranches: TrancheState[] = [
-    {
-      tranche: 1,
-      allocationPercent: SOXL_TRANCHE_PERCENT,
-      status: executedTranches.includes(1)
-        ? 'EXECUTED'
-        : analysis.drawdownPercent <= -40
-        ? 'CANDIDATE'
-        : 'WAITING',
-      triggerCondition: 'SOXX 回撤達 -40%，並出現初步止跌訊號',
-    },
-    {
-      tranche: 2,
-      allocationPercent: SOXL_TRANCHE_PERCENT,
-      status: executedTranches.includes(2)
-        ? 'EXECUTED'
-        : analysis.drawdownPercent <= -50
-        ? 'CANDIDATE'
-        : 'WAITING',
-      triggerCondition: 'SOXX 回撤達 -50%',
-    },
-    {
-      tranche: 3,
-      allocationPercent: SOXL_TRANCHE_PERCENT,
-      status: executedTranches.includes(3)
-        ? 'EXECUTED'
-        : analysis.drawdownPercent <= -60 || (maxDrawdown <= -50 && !analysis.isNewLowWeekly && analysis.isHigherLow)
-        ? 'CANDIDATE'
-        : 'WAITING',
-      triggerCondition: 'SOXX 回撤達 -60%，或跌過 -50% 後週線不再創新低',
-    },
-    {
-      tranche: 4,
-      allocationPercent: SOXL_TRANCHE_PERCENT,
-      status: executedTranches.includes(4)
-        ? 'EXECUTED'
-        : maxDrawdown <= -40 && analysis.isAboveMa10w && analysis.isBreakout4wHigh
-        ? 'CANDIDATE'
-        : 'WAITING',
-      triggerCondition: '曾跌過 -40% 後，SOXX 站回 10 週均線並突破前四週最高週收盤價',
-    },
-  ]
+  // 1. 狙擊期：本輪高點後「盤中」曾跌到 -40% 即啟動，之後依時間陸續進場；
+  //    跌得更深（-50% / -60%）或站回 10 週均線並突破時，對應批次提前解鎖。
+  //    SOXX 創新高 → 高點更新 → 狙擊期自動結束。
+  const activated = maxDrawdown <= SOXL_ACTIVATE_DRAWDOWN
+  const now = params.now ?? new Date()
+  const weeksSince = params.sniperActivatedAt
+    ? (now.getTime() - new Date(params.sniperActivatedAt).getTime()) / (7 * 24 * 3600 * 1000)
+    : activated
+    ? 0
+    : -1
+  const W = SOXL_INTERVAL_WEEKS
+  const ready = (k: 1 | 2 | 3 | 4) => {
+    if (!activated) return false
+    if (k === 1) return true
+    if (weeksSince >= W * (k - 1)) return true
+    if (k === 2) return maxDrawdown <= -50
+    if (k === 3) return maxDrawdown <= -60
+    return analysis.isAboveMa10w && analysis.isBreakout4wHigh
+  }
+  const unlockDate = (k: number) => {
+    if (!params.sniperActivatedAt) return ''
+    const d = new Date(new Date(params.sniperActivatedAt).getTime() + W * (k - 1) * 7 * 24 * 3600 * 1000)
+    return d.toISOString().slice(0, 10)
+  }
+  const cond = (k: 1 | 2 | 3 | 4) => {
+    const base = '本輪盤中曾跌到 -40%（啟動狙擊期）'
+    if (k === 1) return `${base}後即可買進`
+    const timeRule = `啟動後滿 ${W * (k - 1)} 週${unlockDate(k) ? `（${unlockDate(k)} 起）` : ''}`
+    if (k === 2) return `${timeRule}，或盤中跌到 -50% 提前解鎖`
+    if (k === 3) return `${timeRule}，或盤中跌到 -60% 提前解鎖`
+    return `${timeRule}，或站回 10 週均線並突破前四週高點提前解鎖`
+  }
+  const tranches: TrancheState[] = ([1, 2, 3, 4] as const).map((k) => ({
+    tranche: k,
+    allocationPercent: SOXL_TRANCHE_PERCENT,
+    status: executedTranches.includes(k) ? 'EXECUTED' : ready(k) ? 'CANDIDATE' : 'WAITING',
+    triggerCondition: cond(k),
+  }))
 
   // 2. Evaluate Exit Tiers
   const exitAlerts = {
@@ -234,17 +236,17 @@ export function evaluateSoxlSniperStrategy(params: {
       }
     } else if (readyTranche) {
       // Check if current weekly bar is confirmed
-      const isConfirmed = analysis.isCurrentBarConfirmed
+      const isConfirmed = true // 狙擊期以盤中價啟動，不需等週線收盤
       const recession =
         macroVerdict === 'RECESSION' || macroVerdict === 'OVERHEAT' || macroVerdict === 'UNKNOWN' || !!params.macroStale
       activeSignal = {
         type: isConfirmed && !recession ? 'BUY_CANDIDATE' : 'MANUAL_REVIEW_REQUIRED',
-        title: `第 ${readyTranche.tranche} 批進場候選 (${isConfirmed ? '週線正式成立' : '盤中暫定觀察'})`,
+        title: `第 ${readyTranche.tranche} 批可進場（狙擊期第 ${Math.floor(Math.max(0, weeksSince)) + 1} 週）`,
         reason: `${readyTranche.triggerCondition} (目前 SOXX 回撤: ${analysis.drawdownPercent}%)。`,
         suggestedAction: !isConfirmed
           ? `盤中暫時觸發，尚未週五正式收盤，禁止自動下單，請保持密切觀察。`
           : recession
-          ? `總經屬「${macroVerdict === 'RECESSION' ? '景氣衰退' : macroVerdict === 'OVERHEAT' ? '前波過熱修正' : '資料不足'}」，可投入 ${SOXL_TRANCHE_PERCENT}%，但請確認週線止跌、拉長批次間隔。`
+          ? `總經屬「${macroVerdict === 'RECESSION' ? '景氣衰退' : macroVerdict === 'OVERHEAT' ? '前波過熱修正' : '資料不足'}」，可投入 ${SOXL_TRANCHE_PERCENT}%，建議確認近期止跌後再下單。`
           : `建議投入整體投資資產的 ${SOXL_TRANCHE_PERCENT}% 買進 SOXL。請點選人工確認按鈕執行。`,
         requiresHumanConfirmation: true,
         isStaleData: false,

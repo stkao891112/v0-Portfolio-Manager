@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server'
 import { marketService } from '@/lib/market-data/market-service'
 import { analyzeSoxxIndicators } from '@/lib/strategies/indicators'
-import { evaluateSoxlSniperStrategy } from '@/lib/strategies/soxl-engine'
+import { evaluateSoxlSniperStrategy, SOXL_ACTIVATE_DRAWDOWN, SOXL_INTERVAL_WEEKS } from '@/lib/strategies/soxl-engine'
 import { sqlite, type Statement } from '@/lib/db/client'
 import { ensureTablesExist } from '@/lib/db/init'
 import { v4 as uuidv4 } from 'uuid'
-import { getYahooCloses, getUsUnemployment, getTsmcMonthlyRevenue } from '@/lib/market-data/external-sources'
+import { getYahooCloses, getYahooDaily, getUsUnemployment, getTsmcMonthlyRevenue } from '@/lib/market-data/external-sources'
 import { evaluateMacro } from '@/lib/strategies/macro-check'
 
 export const dynamic = 'force-dynamic'
@@ -15,8 +15,9 @@ export async function GET() {
     await ensureTablesExist()
 
     // 1. 報價、10 年週 K（200 週均線用）、總經資料，全部自動抓
-    const [allBars, soxlQuote, soxxQuote, tnx, irx, vix, hyg, ief, unemp, tsmc, twd] = await Promise.all([
+    const [allBars, soxxDaily, soxlQuote, soxxQuote, tnx, irx, vix, hyg, ief, unemp, tsmc, twd] = await Promise.all([
       marketService.getWeeklyBars('SOXX', 520),
+      getYahooDaily('SOXX', '3y'),
       marketService.getQuote('SOXL'),
       marketService.getQuote('SOXX'),
       getYahooCloses('^TNX', '1mo', '1d', 3600),
@@ -29,28 +30,40 @@ export async function GET() {
       getYahooCloses('TWD=X', '5d', '1d', 6 * 3600),
     ])
 
-    // 2. 本輪高點：近 3 年已收盤週線的最高收盤（自動，已含分割還原）
-    const recent = allBars.slice(-156)
-    const confirmed = recent.filter((b) => b.isClosed)
+    // 2. 本輪高點：近 3 年「日收盤」最高點（已含分割還原）
+    //    狙擊期：高點之後「盤中最低」第一次跌到 -40% 的日期即啟動；創新高時自動重置
+    const daily = soxxDaily.value || []
     let peakIdx = -1
-    confirmed.forEach((b, i) => {
-      if (peakIdx < 0 || b.close > confirmed[peakIdx].close) peakIdx = i
+    daily.forEach((b, i) => {
+      if (peakIdx < 0 || b.c > daily[peakIdx].c) peakIdx = i
     })
-    const peakBar = peakIdx >= 0 ? confirmed[peakIdx] : null
+    const peakBar = peakIdx >= 0 ? { timestamp: daily[peakIdx].t, close: daily[peakIdx].c } : null
     const cyclePeak = peakBar?.close ?? 0
-    const afterPeak = peakIdx >= 0 ? confirmed.slice(peakIdx) : []
-    const lowAfterPeak = afterPeak.length ? Math.min(...afterPeak.map((b) => b.close), ...(soxxQuote.price > 0 && !soxxQuote.isStale ? [soxxQuote.price] : [])) : soxxQuote.price
+    const afterPeak = peakIdx >= 0 ? daily.slice(peakIdx) : []
+    let lowAfterPeak = cyclePeak
+    let lowDate: string | null = null
+    let sniperActivatedAt: string | null = null
+    for (const b of afterPeak) {
+      if (b.l < lowAfterPeak) {
+        lowAfterPeak = b.l
+        lowDate = b.t
+      }
+      if (!sniperActivatedAt && cyclePeak > 0 && (b.l / cyclePeak - 1) * 100 <= SOXL_ACTIVATE_DRAWDOWN) {
+        sniperActivatedAt = b.t
+      }
+    }
     const maxDrawdownSincePeak = cyclePeak > 0 ? (lowAfterPeak / cyclePeak - 1) * 100 : 0
 
-    // 高點當週的 200 週均線（判斷前一波是不是泡沫）
+    // 高點時的 200 週均線（判斷前一波是不是泡沫）：取高點日以前的 200 根週 K
     let soxxPeakTo200w: number | null = null
     if (peakBar) {
-      const gi = allBars.findIndex((b) => b.timestamp === peakBar.timestamp)
-      if (gi >= 199) {
-        const ma = allBars.slice(gi - 199, gi + 1).reduce((a, b) => a + b.close, 0) / 200
+      const before = allBars.filter((b) => b.timestamp <= peakBar.timestamp)
+      if (before.length >= 200) {
+        const ma = before.slice(-200).reduce((a, b) => a + b.close, 0) / 200
         soxxPeakTo200w = peakBar.close / ma
       }
     }
+    const recent = allBars.slice(-156)
 
     // 3. 技術指標（用即時價取代最後一根，讓回撤即時）
     const indicators = analyzeSoxxIndicators(recent, cyclePeak)
@@ -118,8 +131,9 @@ export async function GET() {
       cashAvailable,
       executedTranches,
       maxDrawdownSincePeak,
+      sniperActivatedAt,
       macroVerdict: macro.verdict,
-      soxxStale: soxxQuote.isStale || allBars.length === 0,
+      soxxStale: soxxQuote.isStale || allBars.length === 0 || soxxDaily.stale,
       macroStale: [tnx, irx, vix, hyg, ief, unemp, tsmc].some((x) => x.stale),
     })
 
@@ -132,6 +146,9 @@ export async function GET() {
         peak: cyclePeak,
         peakDate: peakBar?.timestamp ?? null,
         maxDrawdownSincePeak,
+        lowDate,
+        sniperActivatedAt,
+        intervalWeeks: SOXL_INTERVAL_WEEKS,
         soxxPeakTo200w,
       },
       macro,
