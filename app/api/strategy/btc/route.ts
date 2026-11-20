@@ -1,111 +1,148 @@
 import { NextResponse } from 'next/server'
-import { marketService } from '@/lib/market-data/market-service'
 import { sqlite } from '@/lib/db/client'
 import { ensureTablesExist } from '@/lib/db/init'
+import {
+  getYahooCloses,
+  getBtcMvrv,
+  getFearGreed,
+  getMstrBtcHoldings,
+  getMstrDilutedShares,
+} from '@/lib/market-data/external-sources'
+import { scoreCycle, decideAllocation, PHASE_INFO } from '@/lib/strategies/btc-cycle'
 
+export const dynamic = 'force-dynamic'
+
+/** 全自動：抓報價與鏈上指標 → 週期分數 → MSTR/BTC 目標比例 → 加減碼燈號 */
 export async function GET() {
   try {
     await ensureTablesExist()
 
-    // 1. Fetch live quotes for BTC and MSTR
-    const [btcQuote, mstrQuote] = await Promise.all([
-      marketService.getQuote('BTC'),
-      marketService.getQuote('MSTR'),
+    const [btcW, btcD, mstrD, mvrv, fng, holdings, shares, twd] = await Promise.all([
+      getYahooCloses('BTC-USD', '10y', '1wk'), // 200 週均線需要約 4 年，圖表再往前 3 年
+      getYahooCloses('BTC-USD', '1y', '1d', 5 * 60),
+      getYahooCloses('MSTR', '1y', '1d', 5 * 60),
+      getBtcMvrv(),
+      getFearGreed(),
+      getMstrBtcHoldings(),
+      getMstrDilutedShares(),
+      getYahooCloses('TWD=X', '5d', '1d', 6 * 3600),
     ])
 
-    // 2. Fetch strategy settings
-    const settingRow = await sqlite.get<any>(
-      "SELECT config_json FROM strategy_settings WHERE id = 'btc_mstr'"
-    )
+    const btcDaily = btcD.value || []
+    const mstrDaily = mstrD.value || []
+    const btcPrice = btcDaily.at(-1)?.c ?? btcW.value?.at(-1)?.c ?? 0
+    const mstrPrice = mstrDaily.at(-1)?.c ?? 0
+    const usdTwd = twd.value?.at(-1)?.c ?? 32.5
 
-    const config = settingRow
-      ? JSON.parse(settingRow.config_json)
-      : {
-          currentPhase: 'BULL_MID',
-          phases: {
-            BULL_EARLY: { label: '牛市初期', mstrRatio: 0.7, btcRatio: 0.3 },
-            BULL_MID: { label: '牛市中期', mstrRatio: 0.5, btcRatio: 0.5 },
-            BULL_LATE: { label: '牛市後期', mstrRatio: 0.3, btcRatio: 0.7 },
-            BEAR_WAITING: { label: '熊市等待期', mstrRatio: 0.0, btcRatio: 1.0 },
-          },
+    const cycle = scoreCycle({
+      now: new Date(),
+      btcPrice,
+      btcWeeklyCloses: (btcW.value || []).map((p) => p.c),
+      btcDailyCloses: btcDaily.map((p) => p.c),
+      mvrv: mvrv.value?.at(-1)?.c ?? null,
+      fearGreed: fng.value?.[0]?.value ?? null,
+      stale: { price: btcD.stale || btcW.stale, mvrv: mvrv.stale, fearGreed: fng.stale },
+    })
+
+    // mNAV = MSTR 市值 ÷ 持有 BTC 價值（市值用 SEC 稀釋後股數估算，未含債務與特別股）
+    const btcHeld = holdings.value
+    const dilutedShares = shares.value?.shares ?? null
+    const mstrMarketCap = dilutedShares ? dilutedShares * mstrPrice : null
+    const btcNav = btcHeld ? btcHeld * btcPrice : null
+    const mnav = mstrMarketCap && btcNav ? mstrMarketCap / btcNav : null
+
+    // 持倉（資產表各幣別換成美元）
+    const assets = await sqlite.all<any>('SELECT symbol, quantity, current_price, cost_per_unit, currency FROM assets')
+    let totalUsd = 0
+    let btcQty = 0
+    let mstrQty = 0
+    for (const a of assets) {
+      const sym = String(a.symbol).toUpperCase()
+      let price = a.current_price || a.cost_per_unit || 0
+      if (sym === 'BTC' || sym === 'MSTR') {
+        // 多筆（不同帳戶）累加；已換成美元即時價，不再除匯率
+        if (sym === 'BTC') btcQty += a.quantity
+        else mstrQty += a.quantity
+        totalUsd += a.quantity * (sym === 'BTC' ? btcPrice : mstrPrice)
+        continue
+      }
+      const v = a.quantity * price
+      totalUsd += a.currency === 'TWD' ? v / usdTwd : v
+    }
+
+    const allocation = decideAllocation({
+      cycleScore: cycle.score,
+      reliable: cycle.reliable,
+      anyStale: [btcD, btcW, mstrD, mvrv, fng, holdings, shares].some((x) => x.stale),
+      mnav,
+      btcValueUsd: btcQty * btcPrice,
+      mstrValueUsd: mstrQty * mstrPrice,
+      totalPortfolioUsd: totalUsd,
+    })
+
+    // 圖表：BTC 週線＋200 週均線（近 3 年）
+    const wk = btcW.value || []
+    const chart = wk
+      .map((p, i) => {
+        const win = wk.slice(Math.max(0, i - 199), i + 1)
+        return {
+          t: p.t.slice(0, 10),
+          price: Math.round(p.c),
+          ma200w: win.length === 200 ? Math.round(win.reduce((a, b) => a + b.c, 0) / 200) : null,
         }
+      })
+      .slice(-156)
 
-    const currentPhase = config.currentPhase || 'BULL_MID'
-    const phaseRules = config.phases[currentPhase] || { mstrRatio: 0.5, btcRatio: 0.5 }
-
-    // 3. Ratio calculation
-    const mstrBtcRatio = btcQuote.price > 0 ? mstrQuote.price / btcQuote.price : 0
-
-    // 4. Actual holdings from database
-    const [btcAsset, mstrAsset] = await Promise.all([
-      sqlite.get<any>("SELECT * FROM assets WHERE symbol = 'BTC'"),
-      sqlite.get<any>("SELECT * FROM assets WHERE symbol = 'MSTR'"),
-    ])
-
-    const btcQty = btcAsset ? btcAsset.quantity : 0
-    const mstrQty = mstrAsset ? mstrAsset.quantity : 0
-
-    const btcValue = btcQty * btcQuote.price
-    const mstrValue = mstrQty * mstrQuote.price
-    const totalCryptoValue = btcValue + mstrValue
-
-    const actualMstrRatio = totalCryptoValue > 0 ? mstrValue / totalCryptoValue : 0
-    const actualBtcRatio = totalCryptoValue > 0 ? btcValue / totalCryptoValue : 0
-
-    const mstrDeviation = (actualMstrRatio - phaseRules.mstrRatio) * 100
-    const btcDeviation = (actualBtcRatio - phaseRules.btcRatio) * 100
+    // MSTR / BTC 比值（近 1 年，日線對齊日期）
+    const btcByDate = new Map(btcDaily.map((p) => [p.t.slice(0, 10), p.c]))
+    const ratioChart = mstrDaily
+      .map((p) => {
+        const b = btcByDate.get(p.t.slice(0, 10))
+        return b ? { t: p.t.slice(0, 10), ratio: Number(((p.c / b) * 1e4).toFixed(3)) } : null
+      })
+      .filter(Boolean)
 
     return NextResponse.json({
-      currentPhase,
-      phaseRules,
-      btcQuote,
-      mstrQuote,
-      mstrBtcRatio,
-      holdings: {
-        btcQty,
-        btcValue,
-        actualBtcRatio: Number((actualBtcRatio * 100).toFixed(1)),
-        targetBtcRatio: Number((phaseRules.btcRatio * 100).toFixed(1)),
-        btcDeviation: Number(btcDeviation.toFixed(1)),
-        mstrQty,
-        mstrValue,
-        actualMstrRatio: Number((actualMstrRatio * 100).toFixed(1)),
-        targetMstrRatio: Number((phaseRules.mstrRatio * 100).toFixed(1)),
-        mstrDeviation: Number(mstrDeviation.toFixed(1)),
-        totalCryptoValue,
+      updatedAt: new Date().toISOString(),
+      prices: {
+        btc: btcPrice,
+        mstr: mstrPrice,
+        btcChangePct: btcDaily.length > 1 ? (btcPrice / btcDaily.at(-2)!.c - 1) * 100 : 0,
+        mstrChangePct: mstrDaily.length > 1 ? (mstrPrice / mstrDaily.at(-2)!.c - 1) * 100 : 0,
+        usdTwd,
       },
+      cycle: {
+        score: cycle.score,
+        phase: cycle.phase,
+        phaseInfo: PHASE_INFO[cycle.phase],
+        indicators: cycle.indicators,
+        ma200w: cycle.ma200w,
+        ma200d: cycle.ma200d,
+        reliable: cycle.reliable,
+      },
+      mstr: {
+        mnav,
+        btcHeld,
+        dilutedShares,
+        sharesPeriodEnd: shares.value?.periodEnd ?? null,
+        marketCap: mstrMarketCap,
+        btcNav,
+        mnavLabel: allocation.mnavLabel,
+        mnavAdjust: allocation.mnavAdjust,
+      },
+      allocation,
+      holdings: { btcQty, mstrQty, totalUsd },
+      charts: { btc: chart, ratio: ratioChart },
+      sources: [
+        { name: 'Yahoo Finance（報價、K 線）', updatedAt: btcD.updatedAt, stale: btcD.stale },
+        { name: 'CoinMetrics（MVRV）', updatedAt: mvrv.updatedAt, stale: mvrv.stale },
+        { name: 'alternative.me（恐懼貪婪）', updatedAt: fng.updatedAt, stale: fng.stale },
+        { name: 'CoinGecko（MSTR 持幣）', updatedAt: holdings.updatedAt, stale: holdings.stale },
+        { name: 'SEC（MSTR 股數）', updatedAt: shares.updatedAt, stale: shares.stale },
+      ],
     })
   } catch (error: any) {
     console.error('BTC/MSTR Strategy API error:', error)
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
-}
-
-export async function POST(request: Request) {
-  try {
-    await ensureTablesExist()
-    const body = await request.json()
-    const { phase } = body
-
-    if (!phase) {
-      return NextResponse.json({ error: 'Phase is required' }, { status: 400 })
-    }
-
-    const settingRow = await sqlite.get<any>(
-      "SELECT config_json FROM strategy_settings WHERE id = 'btc_mstr'"
-    )
-
-    const config = settingRow ? JSON.parse(settingRow.config_json) : {}
-    config.currentPhase = phase
-
-    const now = new Date().toISOString()
-    await sqlite.run(
-      "UPDATE strategy_settings SET config_json = ?, updated_at = ? WHERE id = 'btc_mstr'",
-      [JSON.stringify(config), now]
-    )
-
-    return NextResponse.json({ success: true, updatedPhase: phase })
-  } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 })
   }
 }

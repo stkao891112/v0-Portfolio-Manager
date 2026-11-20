@@ -1,5 +1,10 @@
 import { SoxxIndicatorAnalysis } from './indicators'
 import { Quote } from '../market-data/provider-interface'
+import type { MacroVerdict } from './macro-check'
+
+/** 每批占總資產 %、累計上限 %（10% 預備金分 4 批） */
+export const SOXL_TRANCHE_PERCENT = 2.5
+export const SOXL_MAX_WEIGHT_PERCENT = 10.0
 
 export type SignalType =
   | 'BUY_CANDIDATE'
@@ -12,7 +17,7 @@ export type SignalType =
 
 export interface TrancheState {
   tranche: 1 | 2 | 3 | 4
-  allocationPercent: 1.25 // 1.25% of total portfolio
+  allocationPercent: number // 占總資產 %
   status: 'WAITING' | 'CANDIDATE' | 'CONFIRMED_PENDING_EXECUTION' | 'EXECUTED'
   triggerCondition: string
   executedAt?: string
@@ -28,7 +33,8 @@ export interface SoxlStrategyState {
   soxlHoldingQuantity: number
   soxlCurrentReturnPercent: number
   soxlPortfolioWeightPercent: number
-  maxAllowedWeightPercent: 5.0
+  maxAllowedWeightPercent: number
+  macroVerdict: MacroVerdict
   cashBufferPercent: number
   tranches: TrancheState[]
   activeSignal: {
@@ -57,11 +63,28 @@ export function evaluateSoxlSniperStrategy(params: {
   soxlCostBasis: number
   cashAvailable: number
   executedTranches?: number[]
+  /** 本輪高點以來最深的回落（%，負數），第 4 批要求曾經跌到 -40% */
+  maxDrawdownSincePeak?: number
+  macroVerdict?: MacroVerdict
+  /** SOXX 報價或週 K 使用過期快取 */
+  soxxStale?: boolean
+  /** 任一總經資料使用過期快取 */
+  macroStale?: boolean
 }): SoxlStrategyState {
-  const { analysis, soxlQuote, totalPortfolioValue, soxlQuantity, soxlCostBasis, cashAvailable, executedTranches = [] } = params
+  const {
+    analysis,
+    soxlQuote,
+    totalPortfolioValue,
+    soxlQuantity,
+    soxlCostBasis,
+    cashAvailable,
+    executedTranches = [],
+    macroVerdict = 'UNKNOWN',
+  } = params
+  const maxDrawdown = Math.min(params.maxDrawdownSincePeak ?? analysis.drawdownPercent, analysis.drawdownPercent)
 
   const soxlPrice = soxlQuote.price
-  const isStale = soxlQuote.isStale
+  const isStale = soxlQuote.isStale || !!params.soxxStale
   const soxlHoldingValue = soxlQuantity * soxlPrice
   const soxlPortfolioWeightPercent =
     totalPortfolioValue > 0 ? (soxlHoldingValue / totalPortfolioValue) * 100 : 0
@@ -72,15 +95,17 @@ export function evaluateSoxlSniperStrategy(params: {
 
   // Risk Check Rules
   const riskViolations: string[] = []
-  if (soxlPortfolioWeightPercent > 5.0) {
-    riskViolations.push(`SOXL 部位佔比 (${soxlPortfolioWeightPercent.toFixed(1)}%) 超過 5.0% 最大持倉限制！`)
+  if (soxlPortfolioWeightPercent > SOXL_MAX_WEIGHT_PERCENT) {
+    riskViolations.push(
+      `SOXL 部位佔比 (${soxlPortfolioWeightPercent.toFixed(1)}%) 超過 ${SOXL_MAX_WEIGHT_PERCENT.toFixed(1)}% 最大持倉限制！`
+    )
   }
 
   // 1. Evaluate 4 Tranches
   const tranches: TrancheState[] = [
     {
       tranche: 1,
-      allocationPercent: 1.25,
+      allocationPercent: SOXL_TRANCHE_PERCENT,
       status: executedTranches.includes(1)
         ? 'EXECUTED'
         : analysis.drawdownPercent <= -40
@@ -90,33 +115,33 @@ export function evaluateSoxlSniperStrategy(params: {
     },
     {
       tranche: 2,
-      allocationPercent: 1.25,
+      allocationPercent: SOXL_TRANCHE_PERCENT,
       status: executedTranches.includes(2)
         ? 'EXECUTED'
-        : analysis.drawdownPercent <= -45
+        : analysis.drawdownPercent <= -50
         ? 'CANDIDATE'
         : 'WAITING',
-      triggerCondition: 'SOXX 回撤達 -45%，再次測試低點且未有效跌破',
+      triggerCondition: 'SOXX 回撤達 -50%',
     },
     {
       tranche: 3,
-      allocationPercent: 1.25,
+      allocationPercent: SOXL_TRANCHE_PERCENT,
       status: executedTranches.includes(3)
         ? 'EXECUTED'
-        : analysis.drawdownPercent <= -50 && !analysis.isNewLowWeekly
+        : analysis.drawdownPercent <= -60 || (maxDrawdown <= -50 && !analysis.isNewLowWeekly && analysis.isHigherLow)
         ? 'CANDIDATE'
         : 'WAITING',
-      triggerCondition: 'SOXX 回撤達 -50%，且不再創週線收盤新低',
+      triggerCondition: 'SOXX 回撤達 -60%，或跌過 -50% 後週線不再創新低',
     },
     {
       tranche: 4,
-      allocationPercent: 1.25,
+      allocationPercent: SOXL_TRANCHE_PERCENT,
       status: executedTranches.includes(4)
         ? 'EXECUTED'
-        : analysis.isAboveMa10w && analysis.isBreakout4wHigh
+        : maxDrawdown <= -40 && analysis.isAboveMa10w && analysis.isBreakout4wHigh
         ? 'CANDIDATE'
         : 'WAITING',
-      triggerCondition: 'SOXX 站回 10 週均線，並突破前四週最高週收盤價',
+      triggerCondition: '曾跌過 -40% 後，SOXX 站回 10 週均線並突破前四週最高週收盤價',
     },
   ]
 
@@ -174,7 +199,7 @@ export function evaluateSoxlSniperStrategy(params: {
       requiresHumanConfirmation: true,
       isStaleData: false,
     }
-  } else if (exitAlerts.ma40BreakdownWarning) {
+  } else if (exitAlerts.ma40BreakdownWarning && soxlQuantity > 0) {
     activeSignal = {
       type: 'WARNING',
       title: '結構性惡化退場警報',
@@ -186,16 +211,41 @@ export function evaluateSoxlSniperStrategy(params: {
   } else {
     // Check buy tranches in order
     const readyTranche = tranches.find((t) => t.status === 'CANDIDATE')
-    if (readyTranche) {
+    const overCap = soxlPortfolioWeightPercent + SOXL_TRANCHE_PERCENT > SOXL_MAX_WEIGHT_PERCENT + 0.01
+    if (readyTranche && overCap) {
+      // 再買一批就會超過 10% 上限
+      activeSignal = {
+        type: 'WARNING',
+        title: `第 ${readyTranche.tranche} 批價格條件成立，但已接近持倉上限`,
+        reason: `SOXL 目前占總資產 ${soxlPortfolioWeightPercent.toFixed(1)}%，再買 ${SOXL_TRANCHE_PERCENT}% 會超過 ${SOXL_MAX_WEIGHT_PERCENT}% 上限。`,
+        suggestedAction: '不再加碼，等待停利條件。',
+        requiresHumanConfirmation: true,
+        isStaleData: false,
+      }
+    } else if (readyTranche && macroVerdict === 'STRUCTURAL') {
+      // 價格到了，但總經判斷是產業倒退或泡沫破裂 → 不買
+      activeSignal = {
+        type: 'WARNING',
+        title: `第 ${readyTranche.tranche} 批價格條件成立，但總經亮紅燈：先不買`,
+        reason: `${readyTranche.triggerCondition}（目前回撤 ${analysis.drawdownPercent}%），但台積電營收或泡沫指標顯示產業有結構性問題。`,
+        suggestedAction: '保留預備金，等台積電營收止跌或總經轉黃燈再評估。',
+        requiresHumanConfirmation: true,
+        isStaleData: false,
+      }
+    } else if (readyTranche) {
       // Check if current weekly bar is confirmed
       const isConfirmed = analysis.isCurrentBarConfirmed
+      const recession =
+        macroVerdict === 'RECESSION' || macroVerdict === 'OVERHEAT' || macroVerdict === 'UNKNOWN' || !!params.macroStale
       activeSignal = {
-        type: isConfirmed ? 'BUY_CANDIDATE' : 'MANUAL_REVIEW_REQUIRED',
+        type: isConfirmed && !recession ? 'BUY_CANDIDATE' : 'MANUAL_REVIEW_REQUIRED',
         title: `第 ${readyTranche.tranche} 批進場候選 (${isConfirmed ? '週線正式成立' : '盤中暫定觀察'})`,
         reason: `${readyTranche.triggerCondition} (目前 SOXX 回撤: ${analysis.drawdownPercent}%)。`,
-        suggestedAction: isConfirmed
-          ? `建議投入整體投資資產的 1.25% 買進 SOXL。請點選人工確認按鈕執行。`
-          : `盤中暫時觸發，尚未週五正式收盤，禁止自動下單，請保持密切觀察。`,
+        suggestedAction: !isConfirmed
+          ? `盤中暫時觸發，尚未週五正式收盤，禁止自動下單，請保持密切觀察。`
+          : recession
+          ? `總經屬「${macroVerdict === 'RECESSION' ? '景氣衰退' : macroVerdict === 'OVERHEAT' ? '前波過熱修正' : '資料不足'}」，可投入 ${SOXL_TRANCHE_PERCENT}%，但請確認週線止跌、拉長批次間隔。`
+          : `建議投入整體投資資產的 ${SOXL_TRANCHE_PERCENT}% 買進 SOXL。請點選人工確認按鈕執行。`,
         requiresHumanConfirmation: true,
         isStaleData: false,
       }
@@ -220,7 +270,8 @@ export function evaluateSoxlSniperStrategy(params: {
     soxlHoldingQuantity: soxlQuantity,
     soxlCurrentReturnPercent,
     soxlPortfolioWeightPercent,
-    maxAllowedWeightPercent: 5.0,
+    maxAllowedWeightPercent: SOXL_MAX_WEIGHT_PERCENT,
+    macroVerdict,
     cashBufferPercent,
     tranches,
     activeSignal,

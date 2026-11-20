@@ -5,33 +5,83 @@ import { evaluateSoxlSniperStrategy } from '@/lib/strategies/soxl-engine'
 import { sqlite, type Statement } from '@/lib/db/client'
 import { ensureTablesExist } from '@/lib/db/init'
 import { v4 as uuidv4 } from 'uuid'
+import { getYahooCloses, getUsUnemployment, getTsmcMonthlyRevenue } from '@/lib/market-data/external-sources'
+import { evaluateMacro } from '@/lib/strategies/macro-check'
+
+export const dynamic = 'force-dynamic'
 
 export async function GET() {
   try {
     await ensureTablesExist()
 
-    // 1. Fetch SOXX weekly bars & SOXL quote
-    const [soxxBars, soxlQuote, soxxQuote] = await Promise.all([
-      marketService.getWeeklyBars('SOXX', 104),
+    // 1. 報價、10 年週 K（200 週均線用）、總經資料，全部自動抓
+    const [allBars, soxlQuote, soxxQuote, tnx, irx, vix, hyg, ief, unemp, tsmc, twd] = await Promise.all([
+      marketService.getWeeklyBars('SOXX', 520),
       marketService.getQuote('SOXL'),
       marketService.getQuote('SOXX'),
+      getYahooCloses('^TNX', '1mo', '1d', 3600),
+      getYahooCloses('^IRX', '1mo', '1d', 3600),
+      getYahooCloses('^VIX', '1mo', '1d', 15 * 60),
+      getYahooCloses('HYG', '6mo', '1d', 3600),
+      getYahooCloses('IEF', '6mo', '1d', 3600),
+      getUsUnemployment(),
+      getTsmcMonthlyRevenue(),
+      getYahooCloses('TWD=X', '5d', '1d', 6 * 3600),
     ])
 
-    // 2. Fetch strategy settings from database
-    const settingRow = await sqlite.get<any>(
-      "SELECT config_json FROM strategy_settings WHERE id = 'soxl_sniper'"
-    )
+    // 2. 本輪高點：近 3 年已收盤週線的最高收盤（自動，已含分割還原）
+    const recent = allBars.slice(-156)
+    const confirmed = recent.filter((b) => b.isClosed)
+    let peakIdx = -1
+    confirmed.forEach((b, i) => {
+      if (peakIdx < 0 || b.close > confirmed[peakIdx].close) peakIdx = i
+    })
+    const peakBar = peakIdx >= 0 ? confirmed[peakIdx] : null
+    const cyclePeak = peakBar?.close ?? 0
+    const afterPeak = peakIdx >= 0 ? confirmed.slice(peakIdx) : []
+    const lowAfterPeak = afterPeak.length ? Math.min(...afterPeak.map((b) => b.close), ...(soxxQuote.price > 0 && !soxxQuote.isStale ? [soxxQuote.price] : [])) : soxxQuote.price
+    const maxDrawdownSincePeak = cyclePeak > 0 ? (lowAfterPeak / cyclePeak - 1) * 100 : 0
 
-    const config = settingRow ? JSON.parse(settingRow.config_json) : { cyclePeakSoxx: 320.0 }
+    // 高點當週的 200 週均線（判斷前一波是不是泡沫）
+    let soxxPeakTo200w: number | null = null
+    if (peakBar) {
+      const gi = allBars.findIndex((b) => b.timestamp === peakBar.timestamp)
+      if (gi >= 199) {
+        const ma = allBars.slice(gi - 199, gi + 1).reduce((a, b) => a + b.close, 0) / 200
+        soxxPeakTo200w = peakBar.close / ma
+      }
+    }
 
-    // 3. Perform indicator analysis
-    const indicators = analyzeSoxxIndicators(soxxBars, config.cyclePeakSoxx, config.cycleAnchorDate)
+    // 3. 技術指標（用即時價取代最後一根，讓回撤即時）
+    const indicators = analyzeSoxxIndicators(recent, cyclePeak)
+
+    // 4. 總經判斷
+    const last = (s: { value: { c: number }[] | null }) => s.value?.at(-1)?.c ?? null
+    const ratio = (h: typeof hyg.value, f: typeof ief.value, back: number) => {
+      if (!h || !f || h.length <= back || f.length <= back) return null
+      return h.at(-1 - back)!.c / f.at(-1 - back)!.c
+    }
+    const rNow = ratio(hyg.value, ief.value, 0)
+    const r3m = ratio(hyg.value, ief.value, 63)
+    const macro = evaluateMacro({
+      unemployment: unemp.value?.map((r) => r.rate) ?? null,
+      tnx: last(tnx),
+      irx: last(irx),
+      vix: last(vix),
+      hygIefChange3m: rNow && r3m ? (rNow / r3m - 1) * 100 : null,
+      tsmcRevenue: tsmc.value,
+      soxxPeakTo200w,
+    })
+    const usdTwd = last(twd) ?? 32.5
 
     // 4. Fetch SOXL holding, all assets, and executed tranches
     const [soxlAsset, allAssets, executedRows] = await Promise.all([
       sqlite.get<any>("SELECT * FROM assets WHERE symbol = 'SOXL'"),
       sqlite.all<any>('SELECT * FROM assets'),
-      sqlite.all<any>("SELECT notes FROM transactions WHERE symbol = 'SOXL' AND type = 'BUY'"),
+      // 只算本輪高點之後的買進，上一輪執行過的批次不影響新一輪
+      sqlite.all<any>("SELECT notes FROM transactions WHERE symbol = 'SOXL' AND type = 'BUY' AND date >= ?", [
+        (peakBar?.timestamp ?? '1970-01-01').slice(0, 10),
+      ]),
     ])
     const soxlQuantity = soxlAsset ? soxlAsset.quantity : 0
     const soxlCostBasis = soxlAsset ? soxlAsset.cost_per_unit : 0
@@ -42,7 +92,8 @@ export async function GET() {
 
     for (const a of allAssets) {
       const price = a.current_price || a.cost_per_unit || 0
-      const val = a.quantity * price
+      // 台幣資產換成美元，與 SOXL 同幣別比較
+      const val = (a.quantity * price) / (a.currency === 'TWD' ? usdTwd : 1)
       totalPortfolioValue += val
       if (a.symbol.includes('CASH') || a.symbol.includes('BUFFER')) {
         cashAvailable += val
@@ -50,12 +101,11 @@ export async function GET() {
     }
 
     // Executed tranches from transactions table
+    // 備註格式為「第 1 批」或「第1批」都要認得
     const executedTranches: number[] = []
     for (const row of executedRows) {
-      if (row.notes?.includes('第1批')) executedTranches.push(1)
-      if (row.notes?.includes('第2批')) executedTranches.push(2)
-      if (row.notes?.includes('第3批')) executedTranches.push(3)
-      if (row.notes?.includes('第4批')) executedTranches.push(4)
+      const m = String(row.notes || '').match(/第\s*([1-4])\s*批/)
+      if (m) executedTranches.push(Number(m[1]))
     }
 
     // 5. Run strategy engine
@@ -67,6 +117,10 @@ export async function GET() {
       soxlCostBasis,
       cashAvailable,
       executedTranches,
+      maxDrawdownSincePeak,
+      macroVerdict: macro.verdict,
+      soxxStale: soxxQuote.isStale || allBars.length === 0,
+      macroStale: [tnx, irx, vix, hyg, ief, unemp, tsmc].some((x) => x.stale),
     })
 
     return NextResponse.json({
@@ -74,6 +128,18 @@ export async function GET() {
       strategyState,
       soxxQuote,
       soxlQuote,
+      cycle: {
+        peak: cyclePeak,
+        peakDate: peakBar?.timestamp ?? null,
+        maxDrawdownSincePeak,
+        soxxPeakTo200w,
+      },
+      macro,
+      macroSources: [
+        { name: 'BLS 失業率', updatedAt: unemp.updatedAt, stale: unemp.stale },
+        { name: 'FinMind 台積電營收', updatedAt: tsmc.updatedAt, stale: tsmc.stale },
+        { name: 'Yahoo 殖利率／VIX／HYG／IEF', updatedAt: vix.updatedAt, stale: vix.stale || hyg.stale },
+      ],
     })
   } catch (error: any) {
     console.error('SOXL Strategy API error:', error)

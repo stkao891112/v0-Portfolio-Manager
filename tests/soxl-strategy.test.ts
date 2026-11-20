@@ -63,6 +63,7 @@ describe('SOXL Sniper Strategy State Machine Tests', () => {
       soxlQuantity: 0,
       soxlCostBasis: 0,
       cashAvailable: 10000,
+      macroVerdict: 'PANIC',
     })
 
     expect(state.activeSignal.type).toBe('BUY_CANDIDATE')
@@ -99,18 +100,86 @@ describe('SOXL Sniper Strategy State Machine Tests', () => {
     expect(state.activeSignal.title).toContain('結構性惡化退場警報')
   })
 
-  it('should flag risk violation if SOXL position exceeds 5% of portfolio', () => {
+  it('should flag risk violation if SOXL position exceeds 10% of portfolio', () => {
     const state = evaluateSoxlSniperStrategy({
       analysis: baseAnalysis,
       soxlQuote: mockSoxlQuote, // $30
       totalPortfolioValue: 100000,
-      soxlQuantity: 250, // 250 * 30 = $7500 = 7.5% > 5%
+      soxlQuantity: 400, // 400 * 30 = $12000 = 12% > 10%
       soxlCostBasis: 30.0,
       cashAvailable: 5000,
     })
 
     expect(state.riskRulesPassed).toBe(false)
     expect(state.riskViolations.length).toBeGreaterThan(0)
-    expect(state.riskViolations[0]).toContain('超過 5.0%')
+    expect(state.riskViolations[0]).toContain('超過 10.0%')
+  })
+
+  it('第 4 批：沒跌過 -40% 時站回均線不觸發', () => {
+    const state = evaluateSoxlSniperStrategy({
+      analysis: { ...baseAnalysis, drawdownPercent: -10, isAboveMa10w: true, isBreakout4wHigh: true },
+      soxlQuote: mockSoxlQuote,
+      totalPortfolioValue: 100000,
+      soxlQuantity: 0,
+      soxlCostBasis: 0,
+      cashAvailable: 10000,
+      maxDrawdownSincePeak: -20,
+    })
+    expect(state.tranches[3].status).toBe('WAITING')
+  })
+
+  it('總經亮紅燈時，價格到了也不買', () => {
+    const state = evaluateSoxlSniperStrategy({
+      analysis: { ...baseAnalysis, drawdownPercent: -42, isCurrentBarConfirmed: true },
+      soxlQuote: mockSoxlQuote,
+      totalPortfolioValue: 100000,
+      soxlQuantity: 0,
+      soxlCostBasis: 0,
+      cashAvailable: 10000,
+      macroVerdict: 'STRUCTURAL',
+    })
+    expect(state.activeSignal.type).toBe('WARNING')
+    expect(state.activeSignal.title).toContain('先不買')
+  })
+
+  it('恐慌修正且週線確認 → 買進候選，每批 2.5%', () => {
+    const state = evaluateSoxlSniperStrategy({
+      analysis: { ...baseAnalysis, drawdownPercent: -42, isCurrentBarConfirmed: true },
+      soxlQuote: mockSoxlQuote,
+      totalPortfolioValue: 100000,
+      soxlQuantity: 0,
+      soxlCostBasis: 0,
+      cashAvailable: 10000,
+      macroVerdict: 'PANIC',
+    })
+    expect(state.activeSignal.type).toBe('BUY_CANDIDATE')
+    expect(state.tranches[0].allocationPercent).toBe(2.5)
+  })
+
+  it('再買一批會超過 10% 上限 → 不加碼', () => {
+    const state = evaluateSoxlSniperStrategy({
+      analysis: { ...baseAnalysis, drawdownPercent: -42, isCurrentBarConfirmed: true },
+      soxlQuote: mockSoxlQuote,
+      totalPortfolioValue: 100000,
+      soxlQuantity: 300, // 9%
+      soxlCostBasis: 30,
+      cashAvailable: 10000,
+      macroVerdict: 'PANIC',
+    })
+    expect(state.activeSignal.type).toBe('WARNING')
+  })
+
+  it('總經資料過期 → 降為人工確認', () => {
+    const state = evaluateSoxlSniperStrategy({
+      analysis: { ...baseAnalysis, drawdownPercent: -42, isCurrentBarConfirmed: true },
+      soxlQuote: mockSoxlQuote,
+      totalPortfolioValue: 100000,
+      soxlQuantity: 0,
+      soxlCostBasis: 0,
+      cashAvailable: 10000,
+      macroVerdict: 'PANIC',
+      macroStale: true,
+    })
+    expect(state.activeSignal.type).toBe('MANUAL_REVIEW_REQUIRED')
   })
 })

@@ -27,6 +27,7 @@ export function SoxlDashboard() {
   const [ma10w, setMa10w] = useState<number | null>(null)
   const [ma40w, setMa40w] = useState<number | null>(null)
   const [loading, setLoading] = useState(false)
+  const [data, setData] = useState<any>(null)
 
   // Backtest state
   const [showBacktest, setShowBacktest] = useState(false)
@@ -40,6 +41,7 @@ export function SoxlDashboard() {
       const res = await fetch('/api/strategy/soxl')
       if (res.ok) {
         const data = await res.json()
+        setData(data)
         if (data.indicators?.currentPrice) setCurrentSoxxPrice(data.indicators.currentPrice)
         if (data.indicators?.cyclePeak) setCyclePeak(data.indicators.cyclePeak)
         if (data.indicators?.ma10w) setMa10w(data.indicators.ma10w)
@@ -71,10 +73,13 @@ export function SoxlDashboard() {
 
   useEffect(() => {
     fetchStrategyData()
+    const id = setInterval(fetchStrategyData, 60_000) // 每分鐘自動更新
+    return () => clearInterval(id)
   }, [])
 
   // Drawdown calculation: Current SOXX Weekly Close / Cycle Peak - 1
-  const drawdown = cyclePeak > 0 ? (currentSoxxPrice / cyclePeak - 1) * 100 : 0
+  const drawdown =
+    data?.indicators?.drawdownPercent ?? (cyclePeak > 0 ? (currentSoxxPrice / cyclePeak - 1) * 100 : 0)
 
   const handleConfirmTranche = async (trancheId: number, targetPercent: number) => {
     const qty = prompt(`請輸入預計買進 SOXL 股數 (單價約 $${currentSoxlPrice}):`, '50')
@@ -104,37 +109,42 @@ export function SoxlDashboard() {
     }
   }
 
-  // Tranche configurations
-  const tranches = [
-    {
-      id: 1,
-      name: '第一批進場 (1.25%)',
-      threshold: -40,
-      condition: 'SOXX 週線回撤達 -40% 且初步止跌',
-      status: drawdown <= -40 ? 'READY' : 'WAITING',
-    },
-    {
-      id: 2,
-      name: '第二批進場 (1.25%)',
-      threshold: -45,
-      condition: 'SOXX 週線回撤達 -45% 再次測底不破',
-      status: drawdown <= -45 ? 'READY' : 'WAITING',
-    },
-    {
-      id: 3,
-      name: '第三批進場 (1.25%)',
-      threshold: -50,
-      condition: 'SOXX 週線回撤達 -50% 不再創收盤新低',
-      status: drawdown <= -50 ? 'READY' : 'WAITING',
-    },
-    {
-      id: 4,
-      name: '第四批進場 (1.25%)',
-      threshold: -40,
-      condition: 'SOXX 站回 10 週均線且突破前 4 週最高週收盤',
-      status: ma10w && currentSoxxPrice > ma10w ? 'READY' : 'WAITING',
-    },
-  ]
+  // 4 批進場狀態：由後端策略引擎計算（含總經判斷、第 4 批需曾跌過 -40%）
+  const tranches = ((data?.strategyState?.tranches as any[]) || []).map((t) => ({
+    id: t.tranche,
+    name: `第 ${t.tranche} 批進場 (${t.allocationPercent}%)`,
+    condition: t.triggerCondition,
+    status: t.status === 'CANDIDATE' ? 'READY' : t.status === 'EXECUTED' ? 'DONE' : 'WAITING',
+  }))
+  const signal = data?.strategyState?.activeSignal
+  const macro = data?.macro
+  const LIGHT: Record<string, string> = {
+    green: 'border-emerald-500/40 bg-emerald-500/10 text-emerald-400',
+    yellow: 'border-amber-400/40 bg-amber-400/10 text-amber-300',
+    red: 'border-rose-500/40 bg-rose-500/10 text-rose-400',
+    gray: 'border-slate-400/40 bg-slate-400/10 text-slate-300',
+  }
+  const DOT: Record<string, string> = { green: 'bg-emerald-500', yellow: 'bg-amber-400', red: 'bg-rose-500', gray: 'bg-slate-400' }
+  // 一眼結論：買進候選 = 綠；警告／停利 = 紅；需人工確認 = 黃；未進入區間 = 灰
+  const verdictLight = !signal
+    ? 'gray'
+    : signal.type === 'BUY_CANDIDATE'
+    ? 'green'
+    : signal.type === 'WARNING' || signal.type === 'SELL_CANDIDATE'
+    ? 'red'
+    : signal.type === 'MANUAL_REVIEW_REQUIRED' || signal.type === 'DATA_STALE'
+    ? 'yellow'
+    : 'gray'
+  const verdictText =
+    verdictLight === 'green'
+      ? '可加碼 SOXL'
+      : verdictLight === 'red'
+      ? signal?.type === 'SELL_CANDIDATE'
+        ? '停利減碼'
+        : '不買／注意'
+      : verdictLight === 'yellow'
+      ? '需人工判斷'
+      : '不動作，等待'
 
   // Exit tiers
   const exitTiers = [
@@ -144,7 +154,7 @@ export function SoxlDashboard() {
   ]
 
   const riskRules = [
-    { rule: 'SOXL 最大持倉不得超過整體投資資產 5%', pass: true },
+    { rule: 'SOXL 最大持倉不得超過整體投資資產 10%', pass: true },
     { rule: '禁止使用信貸、融資或合約增加部位', pass: true },
     { rule: '禁止跌破門檻時自動攤平，嚴格依 4 批進場', pass: true },
     { rule: '緊急預備金嚴格隔離，不可動用為 SOXL 機會預備金', pass: true },
@@ -167,11 +177,11 @@ export function SoxlDashboard() {
             </Badge>
           </div>
           <p className="text-xs text-muted-foreground mt-1">
-            以 SOXX（半導體大盤）為市場基準判定週期回撤；以 SOXL 為分批交易標的（上限 5%）。
+            以 SOXX（半導體大盤）為市場基準判定週期回撤；以 SOXL 為分批交易標的（10% 預備金分 4 批，上限 10%）。
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <Button
             size="sm"
             variant={showBacktest ? 'default' : 'outline'}
@@ -355,6 +365,75 @@ export function SoxlDashboard() {
         </div>
       ) : null}
 
+      {/* 一眼結論 + 總經判斷 */}
+      {data && (
+        <div className="grid gap-6 lg:grid-cols-2">
+          <Card className={`border ${LIGHT[verdictLight]}`}>
+            <CardHeader className="pb-2">
+              <CardTitle className="flex flex-wrap items-center gap-2 text-base text-foreground">
+                <span className={`inline-block size-3 rounded-full ${DOT[verdictLight]}`} />
+                現在要不要加碼 SOXL？
+                <Badge variant="outline" className={LIGHT[verdictLight]}>{verdictText}</Badge>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-xs">
+              <div className="text-sm font-bold text-foreground">{signal?.title}</div>
+              <div className="leading-relaxed text-muted-foreground">{signal?.reason}</div>
+              <div className="rounded-lg border border-border/30 bg-background/40 p-2.5 leading-relaxed text-foreground">
+                {signal?.suggestedAction}
+              </div>
+              <div className="grid grid-cols-3 gap-2 pt-1 text-center">
+                <div className="rounded-lg border border-border/30 bg-background/40 p-2">
+                  <div className="text-[11px] text-muted-foreground">本輪高點（自動）</div>
+                  <div className="font-mono font-bold text-foreground">${data.cycle?.peak?.toFixed(2)}</div>
+                  <div className="text-[10px] text-muted-foreground">{data.cycle?.peakDate?.slice(0, 10)}</div>
+                </div>
+                <div className="rounded-lg border border-border/30 bg-background/40 p-2">
+                  <div className="text-[11px] text-muted-foreground">目前回落</div>
+                  <div className="font-mono font-bold text-rose-400">{drawdown.toFixed(1)}%</div>
+                  <div className="text-[10px] text-muted-foreground">
+                    {drawdown <= -40 ? '已進入狙擊區' : `距 -40% 還差 ${(drawdown + 40).toFixed(1)} 點`}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-border/30 bg-background/40 p-2">
+                  <div className="text-[11px] text-muted-foreground">本輪最深回落</div>
+                  <div className="font-mono font-bold text-foreground">{data.cycle?.maxDrawdownSincePeak?.toFixed(1)}%</div>
+                  <div className="text-[10px] text-muted-foreground">第 4 批需曾到 -40%</div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {macro && (
+            <Card className="border-border/40 bg-card/60 backdrop-blur-xl">
+              <CardHeader className="pb-2">
+                <CardTitle className="flex flex-wrap items-center gap-2 text-base text-foreground">
+                  下跌原因判斷
+                  <Badge variant="outline" className={LIGHT[macro.light]}>{macro.label}</Badge>
+                </CardTitle>
+                <CardDescription className="text-xs">{macro.desc}</CardDescription>
+              </CardHeader>
+              <CardContent className="grid gap-2 sm:grid-cols-2">
+                {macro.checks.map((c: any) => (
+                  <div key={c.key} className="rounded-lg border border-border/30 bg-background/40 p-2.5">
+                    <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                      <span className={`inline-block size-2 rounded-full ${DOT[c.light]}`} />
+                      {c.label}
+                    </div>
+                    <div className="font-mono text-sm font-bold text-foreground">{c.value}</div>
+                    <div className="text-[10px] leading-snug text-muted-foreground">{c.note}</div>
+                  </div>
+                ))}
+                <div className="text-[10px] text-muted-foreground sm:col-span-2">
+                  資料：{(data.macroSources || []).map((x: any) => `${x.name}${x.stale ? '（過期）' : ''}`).join('、')}。
+                  燈號為規則自動計算的參考，不構成投資建議。
+                </div>
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
+
       {/* Drawdown Progress Meter */}
       <Card className="border-border/40 bg-card/60 backdrop-blur-xl">
         <CardHeader className="pb-3">
@@ -379,12 +458,12 @@ export function SoxlDashboard() {
               <div className="font-bold">-40%</div>
               <div className="text-[10px]">第 1 批候選區</div>
             </div>
-            <div className={`p-2 rounded-lg border ${drawdown <= -45 ? 'border-primary/60 bg-primary/20 text-primary glow-primary' : 'border-border/40 bg-background/50 text-muted-foreground'}`}>
-              <div className="font-bold">-45%</div>
+            <div className={`p-2 rounded-lg border ${drawdown <= -50 ? 'border-primary/60 bg-primary/20 text-primary glow-primary' : 'border-border/40 bg-background/50 text-muted-foreground'}`}>
+              <div className="font-bold">-50%</div>
               <div className="text-[10px]">第 2 批候選區</div>
             </div>
-            <div className={`p-2 rounded-lg border ${drawdown <= -50 ? 'border-rose-500/60 bg-rose-500/20 text-rose-300' : 'border-border/40 bg-background/50 text-muted-foreground'}`}>
-              <div className="font-bold">-50%</div>
+            <div className={`p-2 rounded-lg border ${drawdown <= -60 ? 'border-rose-500/60 bg-rose-500/20 text-rose-300' : 'border-border/40 bg-background/50 text-muted-foreground'}`}>
+              <div className="font-bold">-60%</div>
               <div className="text-[10px]">第 3 批極端區</div>
             </div>
           </div>
@@ -397,9 +476,9 @@ export function SoxlDashboard() {
         <Card className="border-border/40 bg-card/60 backdrop-blur-xl">
           <CardHeader className="pb-3 border-b border-border/30">
             <CardTitle className="text-base font-semibold text-foreground flex items-center justify-between">
-              <span>四批次進場狀態機 (每批 1.25%)</span>
+              <span>四批次進場狀態機 (每批 2.5%)</span>
               <Badge variant="outline" className="border-primary/40 text-primary text-xs">
-                持倉上限 5%
+                持倉上限 10%
               </Badge>
             </CardTitle>
             <CardDescription className="text-xs">
@@ -423,7 +502,7 @@ export function SoxlDashboard() {
                           : 'border-muted-foreground/30 text-muted-foreground'
                       }`}
                     >
-                      {t.status === 'READY' ? '可候選 (需人工確認)' : '等待條件成立'}
+                      {t.status === 'READY' ? '可候選 (需人工確認)' : t.status === 'DONE' ? '已執行' : '等待條件成立'}
                     </Badge>
                   </div>
                   <p className="text-xs text-muted-foreground">{t.condition}</p>
@@ -431,7 +510,7 @@ export function SoxlDashboard() {
                 {t.status === 'READY' ? (
                   <Button
                     size="sm"
-                    onClick={() => handleConfirmTranche(t.id, 1.25)}
+                    onClick={() => handleConfirmTranche(t.id, 2.5)}
                     className="bg-primary text-primary-foreground hover:bg-primary/80 text-xs font-semibold"
                   >
                     人工確認執行
