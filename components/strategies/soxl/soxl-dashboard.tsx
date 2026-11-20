@@ -21,6 +21,8 @@ import {
 import { toast } from 'sonner'
 import { usePortfolioStore } from '@/lib/portfolio-store'
 import { SoxlTradeDialog, type SoxlTradeRequest } from './soxl-trade-dialog'
+import { SoxxWeeklyChart } from './soxx-weekly-chart'
+import { BacktestEquityChart } from './backtest-equity-chart'
 
 export function SoxlDashboard() {
   const [cyclePeak, setCyclePeak] = useState(320.0)
@@ -197,6 +199,14 @@ export function SoxlDashboard() {
     action: t.cumulativeSellRatio >= 1 ? '清空剩餘全部持倉' : `累計賣出達建倉量的 ${Math.round(t.cumulativeSellRatio * 3)}/3`,
   }))
 
+  // Phase 2：實際分批間隔、持倉保護
+  const intervalDefault: number = config?.intervalWeeks ?? 4
+  const intervalEffective: number = state?.effectiveIntervalWeeks ?? intervalDefault
+  const intervalStretched = intervalEffective > intervalDefault
+  const protection = state?.protection as
+    | { active: boolean; breakevenStopPrice: number | null; trailingStopPrice: number | null; effectiveStopPrice: number | null }
+    | undefined
+
   // 6 條風控紀律：後端實際計算的結果
   const riskRules: { key: string; rule: string; status: 'pass' | 'fail' | 'warn' | 'manual'; detail: string }[] =
     state?.riskChecks ?? []
@@ -362,6 +372,9 @@ export function SoxlDashboard() {
                     </div>
                   </div>
 
+                  {/* 淨值曲線與水下回撤 */}
+                  <BacktestEquityChart equityCurve={backtestResult.equityCurve} />
+
                   {/* Trades List */}
                   <div className="space-y-2">
                     <span className="text-xs font-semibold text-foreground">回測模擬交易明細清單</span>
@@ -490,6 +503,81 @@ export function SoxlDashboard() {
         </div>
       )}
 
+      {/* SOXX 週線走勢 + Phase 2 波動與保護指標 */}
+      {data && (
+        <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
+          <SoxxWeeklyChart
+            series={data.weeklySeries ?? []}
+            cyclePeak={data.cycle?.peak}
+            ladder={config?.earlyUnlockDrawdowns ?? [-40, -50, -60]}
+          />
+          <Card className="border-border/40 bg-card/60 backdrop-blur-xl">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base text-foreground">波動度與持倉保護</CardTitle>
+              <CardDescription className="text-xs">高波動或總經黃燈時自動拉長分批間隔；浮盈達 +45% 啟動保護停損線。</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3 text-xs">
+              <div className="rounded-lg border border-border/30 bg-background/40 p-2.5">
+                <div className="text-[11px] text-muted-foreground">分批間隔（實際 / 預設）</div>
+                <div className="font-mono text-sm font-bold text-foreground">
+                  {intervalEffective} 週 / {intervalDefault} 週
+                </div>
+                {intervalStretched && (
+                  <div className="mt-1 text-[11px] font-semibold text-amber-300">高波動／黃燈已拉長分批間隔</div>
+                )}
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                {[
+                  { k: 'SOXX 20D 波動', v: data.indicators?.volatility20dPercent, warn: 45 },
+                  { k: 'SOXX 60D 波動', v: data.indicators?.volatility60dPercent, warn: 45 },
+                  { k: '14W ATR', v: data.indicators?.atr14wPercent, warn: 12 },
+                ].map((x) => (
+                  <div key={x.k} className="rounded-lg border border-border/30 bg-background/40 p-2">
+                    <div className="text-[10px] text-muted-foreground">{x.k}</div>
+                    <div className={`font-mono text-sm font-bold ${x.v != null && x.v >= x.warn ? 'text-amber-300' : 'text-foreground'}`}>
+                      {x.v != null ? `${Number(x.v).toFixed(1)}%` : '—'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div
+                className={`rounded-lg border p-2.5 ${
+                  protection?.active ? 'border-emerald-500/40 bg-emerald-500/10' : 'border-border/30 bg-background/40'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] text-muted-foreground">浮盈 +45% 保護線</span>
+                  <Badge
+                    variant="outline"
+                    className={protection?.active ? 'border-emerald-500/50 text-emerald-400' : 'border-muted-foreground/30 text-muted-foreground'}
+                  >
+                    {protection?.active ? '已啟動' : '未啟動'}
+                  </Badge>
+                </div>
+                {protection?.active ? (
+                  <div className="mt-1.5 space-y-0.5 font-mono text-[11px] text-foreground">
+                    <div>保本停損：${protection.breakevenStopPrice?.toFixed(2) ?? '—'}</div>
+                    <div>移動停損：${protection.trailingStopPrice?.toFixed(2) ?? '—'}</div>
+                    <div className="font-bold text-emerald-300">有效停損：${protection.effectiveStopPrice?.toFixed(2) ?? '—'}</div>
+                  </div>
+                ) : (
+                  <div className="mt-1 text-[11px] text-muted-foreground">持倉最高浮盈達 +45% 後自動計算保本與 2.5×ATR 移動停損。</div>
+                )}
+                {state?.exitAlerts?.trailingStopWarning && (
+                  <div className="mt-1.5 text-[11px] font-semibold text-rose-400">SOXL 已跌破保護停損線，請檢視是否出場。</div>
+                )}
+              </div>
+              {state?.exitAlerts?.timeStopWarning26w && (
+                <div className="flex items-start gap-2 rounded-lg border border-amber-400/40 bg-amber-400/10 p-2.5 text-amber-300">
+                  <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                  <span>26 週時間止損警示：狙擊期已超過 26 週但報酬未達 +15%，建議檢討是否降低部位。</span>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
       {/* Drawdown Progress Meter */}
       <Card className="border-border/40 bg-card/60 backdrop-blur-xl">
         <CardHeader className="pb-3">
@@ -540,7 +628,7 @@ export function SoxlDashboard() {
               </Badge>
             </CardTitle>
             <CardDescription className="text-xs">
-              盤中曾跌到 {config?.activateDrawdown ?? -40}% 即啟動狙擊期，之後每 {config?.intervalWeeks ?? 4} 週解鎖一批；跌更深（
+              盤中曾跌到 {config?.activateDrawdown ?? -40}% 即啟動狙擊期，之後每 {intervalEffective} 週解鎖一批；跌更深（
               {(config?.earlyUnlockDrawdowns ?? [-40, -50, -60]).slice(1).join('% / ')}%）或站回均線會提前解鎖。每批需人工確認。
               {state && !state.isCurrentBarConfirmed && (
                 <span className="ml-1 text-amber-300">（本週 K 棒尚未收盤，週線條件僅供參考）</span>
@@ -570,19 +658,26 @@ export function SoxlDashboard() {
                   <p className="text-xs text-muted-foreground">{t.condition}</p>
                 </div>
                 {t.status === 'READY' ? (
-                  <Button
-                    size="sm"
-                    onClick={() => openBuyDialog(t.id)}
-                    disabled={signal?.type !== 'BUY_CANDIDATE' && signal?.type !== 'MANUAL_REVIEW_REQUIRED'}
-                    title={
-                      signal?.type === 'BUY_CANDIDATE' || signal?.type === 'MANUAL_REVIEW_REQUIRED'
-                        ? undefined
-                        : '目前訊號不允許買進（可能超過上限、總經紅燈或資料過期）'
-                    }
-                    className="bg-primary text-primary-foreground hover:bg-primary/80 text-xs font-semibold"
-                  >
-                    人工確認執行
-                  </Button>
+                  <div className="flex flex-col items-end gap-1">
+                    <Button
+                      size="sm"
+                      onClick={() => openBuyDialog(t.id)}
+                      disabled={!state?.activeSignal.canExecuteBuy}
+                      title={
+                        !state?.activeSignal.canExecuteBuy && signal?.type === 'MANUAL_REVIEW_REQUIRED'
+                          ? '盤中突破尚未週線收盤確認'
+                          : !state?.activeSignal.canExecuteBuy
+                          ? '目前訊號不允許買進（可能超過上限、總經紅燈或資料過期）'
+                          : undefined
+                      }
+                      className="bg-primary text-primary-foreground hover:bg-primary/80 text-xs font-semibold"
+                    >
+                      人工確認執行
+                    </Button>
+                    {!state?.activeSignal.canExecuteBuy && signal?.type === 'MANUAL_REVIEW_REQUIRED' && (
+                      <span className="text-right text-[10px] text-amber-400">盤中突破尚未週線收盤確認</span>
+                    )}
+                  </div>
                 ) : (
                   <Clock className="size-4 text-muted-foreground/50 mr-2" />
                 )}

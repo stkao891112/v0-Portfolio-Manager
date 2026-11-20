@@ -17,6 +17,7 @@ import {
 import { runSoxlBacktest } from '../lib/strategies/backtest'
 import { DEFAULT_PORTFOLIO_SETTINGS } from '../lib/db/init'
 import type { SoxxIndicatorAnalysis } from '../lib/strategies/indicators'
+import { resolvePortfolioSoxlConfig } from '../lib/strategies/config-loader'
 
 const analysis: SoxxIndicatorAnalysis = {
   currentPrice: 180,
@@ -32,6 +33,11 @@ const analysis: SoxxIndicatorAnalysis = {
   isBreakout4wHigh: false,
   isNewLowWeekly: false,
   isHigherLow: false,
+    ma10wSlopePercent: null,
+    isStabilizing: false,
+    atr14wPercent: null,
+    volatility20dPercent: null,
+    volatility60dPercent: null,
   lastConfirmedWeeklyClose: 180,
   isCurrentBarConfirmed: true,
   marketPhase: 'DEEP_BEAR',
@@ -111,6 +117,16 @@ describe('SOXL 策略參數單一來源（10% = 2.5% × 4）', () => {
     const layered = resolveSoxlConfig(buildSoxlStrategySettingsJson(), { maxPositionPercent: 8 })
     expect(layered.maxPositionPercent).toBe(8)
     expect(layered.tranchePercent).toBe(2)
+  })
+
+  it('系統上限由策略 10% 調成 12% 時，每批跟著等比調整為 3%', () => {
+    const adjusted = resolvePortfolioSoxlConfig(
+      buildSoxlStrategySettingsJson(),
+      { ...DEFAULT_PORTFOLIO_SETTINGS, soxlMaxPositionPercent: 12 }
+    )
+    expect(adjusted.maxPositionPercent).toBe(12)
+    expect(adjusted.trancheCount).toBe(4)
+    expect(adjusted.tranchePercent).toBe(3)
   })
 
   it('覆寫值不合法時忽略', () => {

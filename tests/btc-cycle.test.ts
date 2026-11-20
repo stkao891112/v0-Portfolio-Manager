@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest'
-import { linearScore, interpolate, scoreCycle, decideAllocation, BTC_CYCLE_CONFIG, monthsSinceLastHalving } from '../lib/strategies/btc-cycle'
+import { linearScore, interpolate, scoreCycle, decideAllocation, BTC_CYCLE_CONFIG, monthsSinceLastHalving, calculateEvMnav, calculateRatioZScore } from '../lib/strategies/btc-cycle'
 
 describe('btc-cycle 基本計算', () => {
+  it('減半權重為 10%，總權重維持 100%', () => {
+    expect(BTC_CYCLE_CONFIG.halving.weight).toBe(10)
+    expect(BTC_CYCLE_CONFIG.mvrv.weight + BTC_CYCLE_CONFIG.priceTo200w.weight + BTC_CYCLE_CONFIG.mayer.weight + BTC_CYCLE_CONFIG.fearGreed.weight + BTC_CYCLE_CONFIG.halving.weight).toBe(100)
+  })
   it('linearScore 夾在 0～100', () => {
     expect(linearScore(0.5, 0.8, 3.7)).toBe(0)
     expect(linearScore(5, 0.8, 3.7)).toBe(100)
@@ -14,6 +18,18 @@ describe('btc-cycle 基本計算', () => {
   })
   it('減半月數', () => {
     expect(monthsSinceLastHalving(new Date('2025-04-20'))).toBeCloseTo(12, 0)
+  })
+})
+
+describe('BTC/MSTR 戰術指標', () => {
+  it('使用含淨負債與優先股的 EV 計算 mNAV', () => {
+    expect(calculateEvMnav({ mstrPrice: 100, dilutedShares: 10, btcHeld: 2, btcPrice: 100, netDebtUsd: 100, preferredStockUsd: 50 })).toBeCloseTo(5.75)
+    expect(calculateEvMnav({ mstrPrice: 0, dilutedShares: 10, btcHeld: 2, btcPrice: 100 })).toBeNull()
+  })
+  it('計算 60 筆 Z-Score，資料不足或零標準差回傳 null', () => {
+    expect(calculateRatioZScore(Array(59).fill(1))).toBeNull()
+    expect(calculateRatioZScore(Array(60).fill(1))).toBeNull()
+    expect(calculateRatioZScore([...Array(59).fill(1), 2])).toBeGreaterThan(2)
   })
 })
 
@@ -68,5 +84,17 @@ describe('decideAllocation', () => {
     const cheap = decideAllocation({ ...base, cycleScore: 50, mnav: 1.2, btcValueUsd: 1, mstrValueUsd: 1 })
     const pricey = decideAllocation({ ...base, cycleScore: 50, mnav: 3, btcValueUsd: 1, mstrValueUsd: 1 })
     expect(cheap.targetMstrShare - pricey.targetMstrShare).toBe(25)
+  })
+  it('熊底左側保護將 MSTR 目標上限壓到 60%', () => {
+    const r = decideAllocation({ ...base, cycleScore: 10, mnav: 1.2, btcValueUsd: 20, mstrValueUsd: 10, btcBelow200dMa: true, mstrBtcRatioFalling: true })
+    expect(r.leftSideProtectionActive).toBe(true)
+    expect(r.targetMstrShare).toBe(60)
+    expect(r.leftSideProtectionMessage).toContain('60%')
+  })
+  it('MSTR/BTC 60D Z-Score 達 2 時顯示換倉警示', () => {
+    const r = decideAllocation({ ...base, cycleScore: 50, mnav: 1.5, btcValueUsd: 20, mstrValueUsd: 10, mstrBtcZScore60d: 2 })
+    expect(r.tacticalSwapAlert.active).toBe(true)
+    expect(r.tacticalSwapAlert.zScore).toBe(2)
+    expect(r.tacticalSwapAlert.message).toContain('換回 BTC')
   })
 })

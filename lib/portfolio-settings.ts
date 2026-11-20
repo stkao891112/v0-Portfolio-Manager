@@ -9,6 +9,12 @@ export interface PortfolioSettings {
   emergencyFundAmount: number
   soxlReserveTargetPercent: number
   soxlMaxPositionPercent: number
+  /** MSTR 淨負債（USD，非負，預設 0） */
+  mstrNetDebtUsd?: number
+  /** MSTR 特別股（USD，非負，預設 0） */
+  mstrPreferredStockUsd?: number
+  /** MSTR 完全稀釋股數手動覆寫（正數；null = 不覆寫） */
+  mstrDilutedSharesOverride?: number | null
 }
 
 export class SettingsValidationError extends Error {}
@@ -43,6 +49,20 @@ export function mergePortfolioSettings(existing: PortfolioSettings, patch: Recor
   nonNegative('emergencyFundAmount', '緊急預備金')
   positive('soxlReserveTargetPercent', 'SOXL 預備金目標比例', 100)
   positive('soxlMaxPositionPercent', 'SOXL 持倉上限', 100)
+  nonNegative('mstrNetDebtUsd', 'MSTR 淨負債')
+  nonNegative('mstrPreferredStockUsd', 'MSTR 特別股')
+
+  // 稀釋股數覆寫：明確送 null（或空字串）= 清除覆寫；其他值必須是正數
+  if (patch.mstrDilutedSharesOverride !== undefined) {
+    const raw = patch.mstrDilutedSharesOverride
+    if (raw === null || (typeof raw === 'string' && raw.trim() === '')) {
+      next.mstrDilutedSharesOverride = null
+    } else {
+      const v = num(raw)
+      if (!Number.isFinite(v) || v <= 0) throw new SettingsValidationError('MSTR 稀釋股數覆寫必須是大於 0 的數字，或 null')
+      next.mstrDilutedSharesOverride = v
+    }
+  }
 
   return next
 }

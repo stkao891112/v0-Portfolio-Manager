@@ -58,6 +58,7 @@ export interface SoxlStrategyState {
   totalPortfolioValue: number
   macroVerdict: MacroVerdict
   cashBufferPercent: number
+  effectiveIntervalWeeks: number
   /** 最新一根週 K 是否已正式收盤 */
   isCurrentBarConfirmed: boolean
   tranches: TrancheState[]
@@ -74,12 +75,21 @@ export interface SoxlStrategyState {
     suggestedAction: string
     requiresHumanConfirmation: boolean
     isStaleData: boolean
+    canExecuteBuy: boolean
   }
   exitAlerts: {
     tier1Profit80: boolean
     tier2Profit150: boolean
     tier3Profit200: boolean
     ma40BreakdownWarning: boolean
+    timeStopWarning26w: boolean
+    trailingStopWarning: boolean
+  }
+  protection: {
+    active: boolean
+    breakevenStopPrice: number | null
+    trailingStopPrice: number | null
+    effectiveStopPrice: number | null
   }
   riskRulesPassed: boolean
   riskViolations: string[]
@@ -115,6 +125,10 @@ export function evaluateSoxlSniperStrategy(params: {
   emergencyFundAmount?: number
   /** 本輪高點之後、沒有對應到任何批次的 SOXL 買進筆數 */
   unassignedBuysThisCycle?: number
+  volatility20dPercent?: number | null
+  soxlPeakPriceSinceEntry?: number
+  soxlAtr14d?: number | null
+  exchangeRate?: number
 }): SoxlStrategyState {
   const {
     analysis,
@@ -157,7 +171,17 @@ export function evaluateSoxlSniperStrategy(params: {
     : activated
     ? 0
     : -1
-  const W = cfg.intervalWeeks
+  const isHighVol =
+    (params.volatility20dPercent != null && params.volatility20dPercent >= 45) ||
+    (analysis.atr14wPercent != null && analysis.atr14wPercent >= 12)
+  const isCautionMacro = macroVerdict === 'OVERHEAT' || macroVerdict === 'RECESSION'
+  const effectiveIntervalWeeks =
+    isHighVol && isCautionMacro
+      ? Math.max(cfg.intervalWeeks, 8)
+      : isHighVol || isCautionMacro
+      ? Math.max(cfg.intervalWeeks, 6)
+      : cfg.intervalWeeks
+  const W = effectiveIntervalWeeks
   const unlockReason = (k: number): UnlockReason | null => {
     if (!activated) return null
     if (k === 1) return 'activation'
@@ -181,12 +205,14 @@ export function evaluateSoxlSniperStrategy(params: {
   }
   const tranches: TrancheState[] = Array.from({ length: cfg.trancheCount }, (_, i) => {
     const k = i + 1
-    const reason = unlockReason(k)
+    const initialReason = unlockReason(k)
+    const timeUnlockDeferred = initialReason === 'time' && analysis.drawdownPercent > -25
+    const reason = timeUnlockDeferred ? null : initialReason
     return {
       tranche: k,
       allocationPercent: cfg.tranchePercent,
       status: executedTranches.includes(k) ? 'EXECUTED' : reason ? 'CANDIDATE' : 'WAITING',
-      triggerCondition: cond(k),
+      triggerCondition: `${cond(k)}${timeUnlockDeferred ? '（目前回撤已收斂至 -25% 以內，時間解鎖暫緩）' : ''}`,
       unlockedBy: executedTranches.includes(k) ? null : reason,
     }
   })
@@ -216,22 +242,38 @@ export function evaluateSoxlSniperStrategy(params: {
       : Math.min(soxlQuantity, sellToReach(readyTier.cumulativeSellRatio))
     : 0
 
+  const peakPrice = Math.max(params.soxlPeakPriceSinceEntry ?? soxlPrice, soxlPrice)
+  const protectionActive =
+    soxlQuantity > 0 && soxlCostBasis > 0 && ((peakPrice - soxlCostBasis) / soxlCostBasis) * 100 >= 45
+  const breakevenStopPrice = protectionActive ? Number((soxlCostBasis * 1.02).toFixed(2)) : null
+  const trailingStopPrice = protectionActive
+    ? Number((params.soxlAtr14d && params.soxlAtr14d > 0 ? peakPrice - 2.5 * params.soxlAtr14d : peakPrice * 0.85).toFixed(2))
+    : null
+  const effectiveStopPrice =
+    breakevenStopPrice !== null && trailingStopPrice !== null
+      ? Math.max(breakevenStopPrice, trailingStopPrice)
+      : null
+  const trailingStopWarning = effectiveStopPrice !== null && soxlPrice <= effectiveStopPrice
   const exitAlerts = {
     tier1Profit80: !!tierReady[0],
     tier2Profit150: !!tierReady[1],
     tier3Profit200: !!tierReady[2],
     ma40BreakdownWarning: analysis.isBelow40wTwoWeeks,
+    timeStopWarning26w: soxlQuantity > 0 && weeksSince >= 26 && soxlCurrentReturnPercent < 15,
+    trailingStopWarning,
   }
 
   // 建議買進股數：每批金額 ÷ 現價，且不超過距離上限的剩餘空間
   const capRoomValue = Math.max(0, (cfg.maxPositionPercent / 100) * totalPortfolioValue - soxlHoldingValue)
   const trancheValue = (cfg.tranchePercent / 100) * totalPortfolioValue
   const suggestedBuyQuantity = soxlPrice > 0 ? Math.floor(Math.min(trancheValue, capRoomValue) / soxlPrice) : 0
+  const usableCashUsd = Math.max(0, cashAvailable - (params.emergencyFundAmount ?? 0) / (params.exchangeRate || 32.5))
+  const cashInsufficient = totalPortfolioValue > 0 && usableCashUsd < trancheValue * 0.5
 
   // 3. Determine Active Signal
   let suggestedSellQuantity = 0
   let unconfirmedBlocked = false
-  let activeSignal: SoxlStrategyState['activeSignal'] = {
+  let activeSignal: Omit<SoxlStrategyState['activeSignal'], 'canExecuteBuy'> = {
     type: 'WAIT',
     title: '尚未進入進場觀察區',
     reason: `SOXX 目前回撤 ${analysis.drawdownPercent}%，尚未達到 ${cfg.activateDrawdown}% 第一批狙擊門檻。`,
@@ -274,6 +316,16 @@ export function evaluateSoxlSniperStrategy(params: {
       requiresHumanConfirmation: true,
       isStaleData: false,
     }
+  } else if (trailingStopWarning) {
+    suggestedSellQuantity = soxlQuantity
+    activeSignal = {
+      type: 'SELL_CANDIDATE',
+      title: 'SOXL 移動停利保護價觸發',
+      reason: `SOXL 現價 $${soxlPrice.toFixed(2)} 已達保護停損價 $${effectiveStopPrice?.toFixed(2)}。`,
+      suggestedAction: `建議人工確認後賣出全部 ${soxlQuantity} 股，保護已實現獲利。`,
+      requiresHumanConfirmation: true,
+      isStaleData: false,
+    }
   } else {
     // Check buy tranches in order
     const readyTranche = tranches.find((t) => t.status === 'CANDIDATE')
@@ -304,11 +356,13 @@ export function evaluateSoxlSniperStrategy(params: {
       const recession =
         macroVerdict === 'RECESSION' || macroVerdict === 'OVERHEAT' || macroVerdict === 'UNKNOWN' || !!params.macroStale
       activeSignal = {
-        type: isConfirmed && !recession ? 'BUY_CANDIDATE' : 'MANUAL_REVIEW_REQUIRED',
+        type: isConfirmed && !recession && !cashInsufficient ? 'BUY_CANDIDATE' : 'MANUAL_REVIEW_REQUIRED',
         title: `第 ${readyTranche.tranche} 批可進場（狙擊期第 ${Math.floor(Math.max(0, weeksSince)) + 1} 週）`,
-        reason: `${readyTranche.triggerCondition} (目前 SOXX 回撤: ${analysis.drawdownPercent}%)。`,
+        reason: `${readyTranche.triggerCondition} (目前 SOXX 回撤: ${analysis.drawdownPercent}%)。${cashInsufficient ? ' 扣除緊急預備金後可用現金不足。' : ''}`,
         suggestedAction: !isConfirmed
           ? `週線突破條件為盤中暫時觸發，尚未週五正式收盤，禁止下單，請保持密切觀察。`
+          : cashInsufficient
+          ? `扣除緊急預備金後可用現金約 $${usableCashUsd.toFixed(2)}，不足本批建議金額的一半；請人工檢視資金來源再決定。`
           : recession
           ? `總經屬「${macroVerdict === 'RECESSION' ? '景氣衰退' : macroVerdict === 'OVERHEAT' ? '前波過熱修正' : '資料不足'}」，可投入 ${cfg.tranchePercent}%，建議確認近期止跌後再下單。`
           : `建議投入整體投資資產的 ${cfg.tranchePercent}%（約 ${suggestedBuyQuantity} 股）買進 SOXL。請點選人工確認按鈕執行。`,
@@ -397,13 +451,25 @@ export function evaluateSoxlSniperStrategy(params: {
     totalPortfolioValue,
     macroVerdict,
     cashBufferPercent,
+    effectiveIntervalWeeks,
     isCurrentBarConfirmed: analysis.isCurrentBarConfirmed,
     tranches,
     suggestedBuyQuantity,
     exitTierReady: readyTier?.tier ?? null,
     suggestedSellQuantity,
-    activeSignal,
+    activeSignal: {
+      ...activeSignal,
+      canExecuteBuy:
+        activeSignal.type === 'BUY_CANDIDATE' ||
+        (activeSignal.type === 'MANUAL_REVIEW_REQUIRED' && !unconfirmedBlocked),
+    },
     exitAlerts,
+    protection: {
+      active: protectionActive,
+      breakevenStopPrice,
+      trailingStopPrice,
+      effectiveStopPrice,
+    },
     riskRulesPassed: riskViolations.length === 0,
     riskViolations,
     riskChecks,

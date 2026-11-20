@@ -95,7 +95,7 @@ export async function POST(request: Request) {
       asset = await sqlite.get<any>('SELECT * FROM assets WHERE id = ?', [assetId])
       if (!asset) return NextResponse.json({ error: '找不到指定的資產' }, { status: 404 })
     } else if (body.symbol) {
-      const matches = await sqlite.all<any>('SELECT * FROM assets WHERE UPPER(symbol) = ?', [String(body.symbol).toUpperCase()])
+      const matches = await sqlite.all<any>('SELECT * FROM assets WHERE UPPER(symbol) = ?', [String(body.symbol).trim().toUpperCase()])
       if (matches.length === 1) asset = matches[0]
     }
     const symbol = String(asset?.symbol ?? body.symbol ?? '').toUpperCase().trim()

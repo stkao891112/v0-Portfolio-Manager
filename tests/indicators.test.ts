@@ -1,8 +1,31 @@
 import { describe, it, expect } from 'vitest'
-import { calculateSMA, calculateDrawdown, analyzeSoxxIndicators, applyLiveQuoteToBars } from '../lib/strategies/indicators'
+import {
+  calculateSMA,
+  calculateDrawdown,
+  analyzeSoxxIndicators,
+  applyLiveQuoteToBars,
+  calculateAnnualizedVolatility,
+  calculateAtrPercent,
+} from '../lib/strategies/indicators'
 import { PriceBar } from '../lib/market-data/provider-interface'
 
 describe('Technical Indicators Calculation Tests', () => {
+  it('計算年化對數報酬波動率與 ATR%，資料不足回傳 null', () => {
+    expect(calculateAnnualizedVolatility([100, 100, 100], 2)).toBe(0)
+    expect(calculateAnnualizedVolatility([100], 2)).toBeNull()
+    const bars: PriceBar[] = Array.from({ length: 4 }, (_, i) => ({
+      timestamp: new Date(Date.UTC(2026, 0, 1 + i)).toISOString(),
+      open: 10,
+      high: 12,
+      low: 8,
+      close: 10,
+      volume: 0,
+      isClosed: true,
+    }))
+    expect(calculateAtrPercent(bars, 3)).toBe(40)
+    expect(calculateAtrPercent(bars.slice(0, 3), 3)).toBeNull()
+  })
+
   it('should correctly calculate Simple Moving Average (SMA)', () => {
     const data = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
     const sma3 = calculateSMA(data, 3)
@@ -48,6 +71,9 @@ describe('Technical Indicators Calculation Tests', () => {
     expect(analysis.drawdownPercent).toBeLessThan(0)
     expect(analysis.ma10w).toBeDefined()
     expect(analysis.ma40w).toBeDefined()
+    expect(analysis.atr14wPercent).not.toBeNull()
+    expect(analysis.volatility20dPercent).toBeNull()
+    expect(typeof analysis.isStabilizing).toBe('boolean')
   })
 
   const WEEK = 7 * 24 * 3600 * 1000

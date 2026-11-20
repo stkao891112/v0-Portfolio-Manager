@@ -10,6 +10,7 @@ import * as transactionsApi from '../app/api/transactions/route'
 import * as portfolioApi from '../app/api/portfolio/route'
 import * as migrateApi from '../app/api/migrate/route'
 import * as soxlApi from '../app/api/strategy/soxl/route'
+import { getExecutedTranchesSinceCyclePeak } from '../app/api/strategy/soxl/route'
 import * as categoriesApi from '../app/api/categories/route'
 
 const json = (url: string, method: string, body?: unknown) =>
@@ -28,6 +29,7 @@ async function resetDb() {
     { sql: 'DELETE FROM assets' },
     { sql: 'DELETE FROM categories' },
     { sql: 'DELETE FROM portfolio_settings' },
+    { sql: 'DELETE FROM soxl_cycle_state' },
   ])
   await sqlite.batch([
     {
@@ -108,6 +110,33 @@ describe('API 整合測試（交易帳本、設定局部更新、遷移防呆、
     expect(asset.quantity).toBe(200)
   })
 
+  it('transactions：symbol 前後空白仍可比對既有資產', async () => {
+    const response = await transactionsApi.POST(
+      json('/api/transactions', 'POST', {
+        symbol: ' 2330.TW ', type: 'DIVIDEND', date: '2026-11-05', quantity: 1, price: 1,
+      })
+    )
+    const body = await response.json()
+    expect(response.status).toBe(200)
+    expect(body.assetId).toBe('a-2330')
+    await transactionsApi.DELETE(new Request(`http://localhost/api/transactions?id=${body.id}`, { method: 'DELETE' }))
+  })
+
+  it('SOXL 批次集合依 cyclePeakDate 篩選，且持倉歸零會重置批次', () => {
+    const tranches = getExecutedTranchesSinceCyclePeak(
+      [
+        { type: 'BUY', quantity: 2, strategy_tranche: 4, date: '2026-10-31' },
+        { type: 'BUY', quantity: 2, strategy_tranche: 2, date: '2026-11-01' },
+        { type: 'SELL', quantity: 2, date: '2026-11-02' },
+        { type: 'SELL', quantity: 2, date: '2026-11-03' },
+        { type: 'BUY', quantity: 1, strategy_tranche: 1, date: '2026-11-04' },
+      ],
+      '2026-11-01',
+      4
+    )
+    expect(tranches).toEqual([1])
+  })
+
   it('portfolio PUT：只改幣別不會洗掉每月投入、緊急預備金、SOXL 參數', async () => {
     const res = await portfolioApi.PUT(json('/api/portfolio', 'PUT', { displayCurrency: 'USD' }))
     expect(res.status).toBe(200)
@@ -118,6 +147,54 @@ describe('API 整合測試（交易帳本、設定局部更新、遷移防呆、
     expect(s.emergency_fund_amount).toBe(250000)
     expect(s.soxl_max_position_percent).toBe(10)
     expect((await portfolioApi.PUT(json('/api/portfolio', 'PUT', { exchangeRate: -1 }))).status).toBe(400)
+  })
+
+  it('portfolio PUT/GET：MSTR 淨負債、特別股、稀釋股數覆寫可局部讀寫', async () => {
+    const getSettings = async () => (await (await portfolioApi.GET()).json()).settings
+
+    // 預設值
+    let s = await getSettings()
+    expect(s.mstrNetDebtUsd).toBe(0)
+    expect(s.mstrPreferredStockUsd).toBe(0)
+    expect(s.mstrDilutedSharesOverride).toBeNull()
+
+    // 只改淨負債：其他欄位不動
+    expect((await portfolioApi.PUT(json('/api/portfolio', 'PUT', { mstrNetDebtUsd: 8_200_000_000 }))).status).toBe(200)
+    s = await getSettings()
+    expect(s.mstrNetDebtUsd).toBe(8_200_000_000)
+    expect(s.mstrPreferredStockUsd).toBe(0)
+    expect(s.mstrDilutedSharesOverride).toBeNull()
+    expect(s.monthlyInvestmentAmount).toBe(45000)
+
+    // 再改特別股與稀釋股數：淨負債保留
+    const res = await portfolioApi.PUT(
+      json('/api/portfolio', 'PUT', { mstrPreferredStockUsd: 5_000_000_000, mstrDilutedSharesOverride: 300_000_000 })
+    )
+    expect(res.status).toBe(200)
+    expect((await res.json()).settings.mstrDilutedSharesOverride).toBe(300_000_000)
+    s = await getSettings()
+    expect(s.mstrNetDebtUsd).toBe(8_200_000_000)
+    expect(s.mstrPreferredStockUsd).toBe(5_000_000_000)
+    expect(s.mstrDilutedSharesOverride).toBe(300_000_000)
+
+    // 只改幣別不會洗掉 MSTR 參數
+    await portfolioApi.PUT(json('/api/portfolio', 'PUT', { displayCurrency: 'TWD' }))
+    s = await getSettings()
+    expect(s.mstrNetDebtUsd).toBe(8_200_000_000)
+    expect(s.mstrDilutedSharesOverride).toBe(300_000_000)
+
+    // 明確送 null 清除稀釋股數覆寫
+    expect((await portfolioApi.PUT(json('/api/portfolio', 'PUT', { mstrDilutedSharesOverride: null }))).status).toBe(200)
+    s = await getSettings()
+    expect(s.mstrDilutedSharesOverride).toBeNull()
+    expect(s.mstrPreferredStockUsd).toBe(5_000_000_000)
+
+    // 驗證：負數、0 股數 → 400，且不寫入
+    expect((await portfolioApi.PUT(json('/api/portfolio', 'PUT', { mstrNetDebtUsd: -1 }))).status).toBe(400)
+    expect((await portfolioApi.PUT(json('/api/portfolio', 'PUT', { mstrPreferredStockUsd: -5 }))).status).toBe(400)
+    expect((await portfolioApi.PUT(json('/api/portfolio', 'PUT', { mstrDilutedSharesOverride: 0 }))).status).toBe(400)
+    s = await getSettings()
+    expect(s.mstrNetDebtUsd).toBe(8_200_000_000)
   })
 
   it('migrate：沒有 confirmOverwrite: true 一律拒絕，不會清空資料', async () => {
@@ -137,6 +214,10 @@ describe('API 整合測試（交易帳本、設定局部更新、遷移防呆、
   })
 
   it('SOXL 下單：讀系統設定匯率、結構化記錄批次、超過 10% 上限回 400、同批不可重複、超賣回 400', async () => {
+    const cycleColumns = await sqlite.all<{ name: string }>('PRAGMA table_info(soxl_cycle_state)')
+    expect(cycleColumns.map((column) => column.name)).toEqual([
+      'id', 'cycle_peak', 'cycle_peak_date', 'sniper_activated_at', 'max_drawdown_since_peak', 'updated_at',
+    ])
     // 總資產 = 2330 200 股 × 成本 610.05 TWD ÷ 30 + 現金 10,000 USD ≈ 14,067 USD；10% ≈ 1,406 USD
     const over = await soxlApi.POST(json('/api/strategy/soxl', 'POST', { action: 'BUY', tranche: 1, quantity: 100, price: 20 }))
     expect(over.status).toBe(400)
@@ -144,6 +225,17 @@ describe('API 整合測試（交易帳本、設定局部更新、遷移防呆、
 
     const noTranche = await soxlApi.POST(json('/api/strategy/soxl', 'POST', { action: 'BUY', quantity: 10, price: 20 }))
     expect(noTranche.status).toBe(400)
+
+    await sqlite.run(
+      `INSERT INTO transactions (id, symbol, type, date, quantity, price, fee, currency, exchange_rate, strategy_tranche, created_at)
+       VALUES ('old-soxl-tranche', 'SOXL', 'BUY', '2026-11-01', 2, 20, 0, 'USD', 30, 1, ?)`,
+      [now]
+    )
+    await sqlite.run(
+      `INSERT OR REPLACE INTO soxl_cycle_state (id, cycle_peak, cycle_peak_date, sniper_activated_at, max_drawdown_since_peak, updated_at)
+       VALUES ('default', 100, '2026-11-02', NULL, 0, ?)`,
+      [now]
+    )
 
     const ok = await soxlApi.POST(json('/api/strategy/soxl', 'POST', { action: 'BUY', tranche: 1, quantity: 15, price: 20 }))
     expect(ok.status).toBe(200)

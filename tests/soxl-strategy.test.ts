@@ -29,6 +29,11 @@ describe('SOXL Sniper Strategy State Machine Tests', () => {
     isBreakout4wHigh: false,
     isNewLowWeekly: false,
     isHigherLow: false,
+    ma10wSlopePercent: null,
+    isStabilizing: false,
+    atr14wPercent: null,
+    volatility20dPercent: null,
+    volatility60dPercent: null,
     lastConfirmedWeeklyClose: 200,
     isCurrentBarConfirmed: true,
     marketPhase: 'BEAR_WATCH',
@@ -45,7 +50,79 @@ describe('SOXL Sniper Strategy State Machine Tests', () => {
     })
 
     expect(state.activeSignal.type).toBe('WAIT')
+    expect(state.activeSignal.canExecuteBuy).toBe(false)
     expect(state.tranches[0].status).toBe('WAITING')
+  })
+
+  it('高波動加黃燈延長間隔；時間解鎖遇回撤收斂暫緩', () => {
+    const state = evaluateSoxlSniperStrategy({
+      analysis: { ...baseAnalysis, drawdownPercent: -20, atr14wPercent: 12 },
+      soxlQuote: mockSoxlQuote,
+      totalPortfolioValue: 100000,
+      soxlQuantity: 0,
+      soxlCostBasis: 0,
+      cashAvailable: 10000,
+      macroVerdict: 'OVERHEAT',
+      maxDrawdownSincePeak: -40,
+      sniperActivatedAt: '2026-01-01T00:00:00Z',
+      now: new Date('2026-04-30T00:00:00Z'),
+    })
+    expect(state.effectiveIntervalWeeks).toBe(8)
+    expect(state.tranches[2].status).toBe('WAITING')
+    expect(state.tranches[2].unlockedBy).toBeNull()
+    expect(state.tranches[2].triggerCondition).toContain('時間解鎖暫緩')
+  })
+
+  it('盤中未確認突破禁用買進，扣緊急預備金後現金不足改人工複核', () => {
+    const common = {
+      analysis: { ...baseAnalysis, drawdownPercent: -30, isAboveMa10w: true, isBreakout4wHigh: true, isCurrentBarConfirmed: false },
+      soxlQuote: mockSoxlQuote,
+      totalPortfolioValue: 100000,
+      soxlQuantity: 0,
+      soxlCostBasis: 0,
+      cashAvailable: 10000,
+      maxDrawdownSincePeak: -40,
+      macroVerdict: 'PANIC' as const,
+      executedTranches: [1, 2, 3],
+      sniperActivatedAt: '2026-11-05T00:00:00Z',
+      now: new Date('2026-11-20T00:00:00Z'),
+    }
+    const intraday = evaluateSoxlSniperStrategy(common)
+    expect(intraday.activeSignal.type).toBe('MANUAL_REVIEW_REQUIRED')
+    expect(intraday.activeSignal.canExecuteBuy).toBe(false)
+
+    const lowCash = evaluateSoxlSniperStrategy({
+      ...common,
+      analysis: { ...common.analysis, isCurrentBarConfirmed: true },
+      executedTranches: [],
+      emergencyFundAmount: 250000,
+      exchangeRate: 25,
+    })
+    expect(lowCash.activeSignal.type).toBe('MANUAL_REVIEW_REQUIRED')
+    expect(lowCash.activeSignal.canExecuteBuy).toBe(true)
+    expect(lowCash.activeSignal.suggestedAction).toContain('扣除緊急預備金後可用現金')
+  })
+
+  it('持有達 26 週顯示時間止損；浮盈超過 45% 後觸發 ATR 移動停利', () => {
+    const state = evaluateSoxlSniperStrategy({
+      analysis: baseAnalysis,
+      soxlQuote: { ...mockSoxlQuote, price: 38 },
+      totalPortfolioValue: 100000,
+      soxlQuantity: 10,
+      soxlCostBasis: 36,
+      cashAvailable: 10000,
+      sniperActivatedAt: '2026-01-01T00:00:00Z',
+      now: new Date('2026-07-02T00:00:00Z'),
+      soxlPeakPriceSinceEntry: 53,
+      soxlAtr14d: 6,
+    })
+    expect(state.exitAlerts.timeStopWarning26w).toBe(true)
+    expect(state.protection.active).toBe(true)
+    expect(state.protection.breakevenStopPrice).toBe(36.72)
+    expect(state.protection.trailingStopPrice).toBe(38)
+    expect(state.exitAlerts.trailingStopWarning).toBe(true)
+    expect(state.activeSignal.type).toBe('SELL_CANDIDATE')
+    expect(state.suggestedSellQuantity).toBe(10)
   })
 
   it('should trigger Tranche 1 CANDIDATE when drawdown reaches -40%', () => {

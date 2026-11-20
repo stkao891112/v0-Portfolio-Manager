@@ -14,6 +14,11 @@ export interface SoxxIndicatorAnalysis {
   isBreakout4wHigh: boolean
   isNewLowWeekly: boolean
   isHigherLow: boolean
+  ma10wSlopePercent: number | null
+  isStabilizing: boolean
+  atr14wPercent: number | null
+  volatility20dPercent: number | null
+  volatility60dPercent: number | null
   lastConfirmedWeeklyClose: number
   isCurrentBarConfirmed: boolean
   marketPhase: 'NORMAL' | 'CORRECTION' | 'BEAR_WATCH' | 'DEEP_BEAR' | 'EXTREME_CORRECTION' | 'EXTREME_PANIC'
@@ -34,6 +39,31 @@ export function calculateSMA(data: number[], period: number): (number | null)[] 
     }
   }
   return result
+}
+
+/** 對數報酬率的年化波動率（母體標準差，百分比）。 */
+export function calculateAnnualizedVolatility(closes: number[], window: number): number | null {
+  if (!Number.isInteger(window) || window <= 0 || closes.length < window + 1) return null
+  const sample = closes.slice(-(window + 1))
+  if (sample.some((close) => !(close > 0) || !Number.isFinite(close))) return null
+  const returns = sample.slice(1).map((close, i) => Math.log(close / sample[i]))
+  const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length
+  const variance = returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / returns.length
+  return Number((Math.sqrt(variance) * Math.sqrt(252) * 100).toFixed(2))
+}
+
+/** 最近 period 根 K 棒的平均真實波幅，占最新收盤價百分比。 */
+export function calculateAtrPercent(bars: PriceBar[], period = 14): number | null {
+  if (!Number.isInteger(period) || period <= 0 || bars.length < period + 1) return null
+  const sample = bars.slice(-(period + 1))
+  const ranges = sample.slice(1).map((bar, i) => {
+    const previousClose = sample[i].close
+    return Math.max(bar.high - bar.low, Math.abs(bar.high - previousClose), Math.abs(bar.low - previousClose))
+  })
+  const close = sample[sample.length - 1].close
+  if (!(close > 0) || ranges.some((range) => !Number.isFinite(range))) return null
+  const atr = ranges.reduce((sum, range) => sum + range, 0) / period
+  return Number(((atr / close) * 100).toFixed(2))
 }
 
 /**
@@ -68,6 +98,11 @@ export function analyzeSoxxIndicators(
       isBreakout4wHigh: false,
       isNewLowWeekly: false,
       isHigherLow: false,
+      ma10wSlopePercent: null,
+      isStabilizing: false,
+      atr14wPercent: null,
+      volatility20dPercent: null,
+      volatility60dPercent: null,
       lastConfirmedWeeklyClose: 0,
       isCurrentBarConfirmed: false,
       marketPhase: 'NORMAL',
@@ -93,6 +128,11 @@ export function analyzeSoxxIndicators(
 
   const ma10w = ma10Series[ma10Series.length - 1]
   const ma40w = ma40Series[ma40Series.length - 1]
+  const ma10wTwoWeeksAgo = ma10Series.length >= 3 ? ma10Series[ma10Series.length - 3] : null
+  const ma10wSlopePercent =
+    ma10w !== null && ma10wTwoWeeksAgo !== null && ma10wTwoWeeksAgo !== 0
+      ? Number((((ma10w / ma10wTwoWeeksAgo) - 1) * 100).toFixed(2))
+      : null
 
   // Calculate Cycle Peak from confirmed closed bars or custom anchor
   const confirmedBars = activeBars.filter((b) => b.isClosed)
@@ -146,6 +186,9 @@ export function analyzeSoxxIndicators(
     const prevLow = confirmedBars[confirmedBars.length - 2].low
     isHigherLow = lastLow > prevLow
   }
+  const isStabilizing =
+    (isHigherLow && !isNewLowWeekly) ||
+    (ma10wSlopePercent !== null && ma10wSlopePercent >= -0.5 && isAboveMa10w)
 
   // Market phase mapping based on ChatGPT rules:
   // -20%: 一般修正 (CORRECTION)
@@ -182,6 +225,11 @@ export function analyzeSoxxIndicators(
     isBreakout4wHigh,
     isNewLowWeekly,
     isHigherLow,
+    ma10wSlopePercent,
+    isStabilizing,
+    atr14wPercent: calculateAtrPercent(bars),
+    volatility20dPercent: null,
+    volatility60dPercent: null,
     lastConfirmedWeeklyClose,
     isCurrentBarConfirmed,
     marketPhase,

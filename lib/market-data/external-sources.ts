@@ -174,23 +174,24 @@ export interface ClosePoint {
 }
 
 /** 取得 Yahoo 收盤價序列。range 例：'5y'、'2y'、'1y'；interval：'1d'、'1wk' */
-export function getYahooCloses(symbol: string, range: string, interval: '1d' | '1wk', ttl = 30 * 60) {
-  return cached<ClosePoint[]>(`yahoo:${symbol}:${range}:${interval}`, ttl, 'Yahoo Finance', async () => {
+export function getYahooCloses(symbol: string, range: string, interval: '1d' | '1wk', ttl = 30 * 60, useAdjClose = false) {
+  return cached<ClosePoint[]>(`yahoo:${symbol}:${range}:${interval}${useAdjClose ? ':adj' : ''}`, ttl, 'Yahoo Finance', async () => {
     const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
       symbol
     )}?range=${range}&interval=${interval}`
     const data = await getJson(url)
     const r = data?.chart?.result?.[0]
     if (!r?.timestamp) throw new Error(`Yahoo 無資料 ${symbol}`)
-    const closes: (number | null)[] = r.indicators?.quote?.[0]?.close || []
+    const adjustedCloses: (number | null)[] = r.indicators?.adjclose?.[0]?.adjclose || []
+    const quotedCloses: (number | null)[] = r.indicators?.quote?.[0]?.close || []
     const out: ClosePoint[] = []
     r.timestamp.forEach((ts: number, i: number) => {
-      const c = closes[i]
+      const c = useAdjClose ? adjustedCloses[i] ?? quotedCloses[i] : quotedCloses[i]
       if (c != null && !isNaN(c)) out.push({ t: new Date(ts * 1000).toISOString(), c })
     })
     // 盤中最新價（meta）補在最後，讓均線比較用到即時價
     const live = r.meta?.regularMarketPrice
-    if (live && out.length) out[out.length - 1] = { ...out[out.length - 1], c: live }
+    if (!useAdjClose && live && out.length) out[out.length - 1] = { ...out[out.length - 1], c: live }
     if (!out.length) throw new Error(`Yahoo 無收盤價 ${symbol}`)
     return out
   })

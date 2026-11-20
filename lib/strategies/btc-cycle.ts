@@ -23,11 +23,11 @@ export const HALVING_DATES = ['2012-11-28', '2016-07-09', '2020-05-11', '2024-04
 
 export const BTC_CYCLE_CONFIG = {
   // [底部值, 頂部值]：線性換算成 0～100
-  mvrv: { bottom: 0.8, top: 3.7, weight: 30 },
-  priceTo200w: { bottom: 1.0, top: 4.0, weight: 25 },
+  mvrv: { bottom: 0.8, top: 3.7, weight: 35 },
+  priceTo200w: { bottom: 1.0, top: 4.0, weight: 30 },
   mayer: { bottom: 0.7, top: 2.4, weight: 15 },
   fearGreed: { bottom: 10, top: 90, weight: 10 },
-  halving: { weight: 20 },
+  halving: { weight: 10 },
   // 減半後月數 → 分數（歷史上約 12～18 個月見頂、30～36 個月見底）
   halvingCurve: [
     [0, 40],
@@ -206,6 +206,33 @@ export function mnavInfo(mnav: number | null) {
   return BTC_CYCLE_CONFIG.mnavAdjust.find((m) => mnav < m.max) || { adj: 0, label: '—' }
 }
 
+export function calculateEvMnav(input: {
+  mstrPrice: number
+  dilutedShares: number
+  btcHeld: number
+  btcPrice: number
+  netDebtUsd?: number
+  preferredStockUsd?: number
+}): number | null {
+  const { mstrPrice, dilutedShares, btcHeld, btcPrice, netDebtUsd = 0, preferredStockUsd = 0 } = input
+  if ([mstrPrice, dilutedShares, btcHeld, btcPrice].some((value) => !Number.isFinite(value) || value <= 0)) return null
+  if (![netDebtUsd, preferredStockUsd].every(Number.isFinite)) return null
+  const ev = mstrPrice * dilutedShares + netDebtUsd + preferredStockUsd
+  const btcNav = btcHeld * btcPrice
+  return Number.isFinite(ev) && Number.isFinite(btcNav) && btcNav > 0 ? ev / btcNav : null
+}
+
+export function calculateRatioZScore(ratios: number[], window = 60): number | null {
+  if (!Number.isInteger(window) || window <= 0 || ratios.length < window) return null
+  const values = ratios.slice(-window)
+  if (values.some((value) => !Number.isFinite(value))) return null
+  const mean = values.reduce((sum, value) => sum + value, 0) / window
+  const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / window
+  const std = Math.sqrt(variance)
+  if (std <= 0) return null
+  return Number(((values.at(-1)! - mean) / std).toFixed(2))
+}
+
 export type Light = 'green' | 'yellow' | 'red' | 'gray'
 
 export interface Decision {
@@ -222,6 +249,9 @@ export interface AllocationInputs {
   btcValueUsd: number
   mstrValueUsd: number
   totalPortfolioUsd: number
+  btcBelow200dMa?: boolean
+  mstrBtcRatioFalling?: boolean
+  mstrBtcZScore60d?: number | null
 }
 
 export function decideAllocation(inp: AllocationInputs) {
@@ -230,7 +260,19 @@ export function decideAllocation(inp: AllocationInputs) {
   const base = interpolate(C.mstrShareCurve, inp.cycleScore)
   const m = mnavInfo(inp.mnav)
   // 過熱區一律 0%，不因 MSTR 便宜而加回
-  const targetMstrShare = phase === 'EUPHORIA' ? 0 : clamp(base + m.adj, 0, C.mstrShareMax)
+  const leftSideProtectionActive =
+    inp.cycleScore < 25 && Boolean(inp.btcBelow200dMa) && Boolean(inp.mstrBtcRatioFalling)
+  const targetMstrShare = phase === 'EUPHORIA'
+    ? 0
+    : clamp(base + m.adj, 0, leftSideProtectionActive ? Math.min(60, C.mstrShareMax) : C.mstrShareMax)
+  const tacticalSwapAlert = {
+    active: inp.mstrBtcZScore60d != null && inp.mstrBtcZScore60d >= 2.0,
+    zScore: inp.mstrBtcZScore60d ?? null,
+    message:
+      inp.mstrBtcZScore60d != null && inp.mstrBtcZScore60d >= 2.0
+        ? 'MSTR 短期相對 BTC 過熱，可考慮戰術性將部分 MSTR 換回 BTC。'
+        : '',
+  }
 
   const cryptoValue = inp.btcValueUsd + inp.mstrValueUsd
   const cryptoWeight = inp.totalPortfolioUsd > 0 ? (cryptoValue / inp.totalPortfolioUsd) * 100 : 0
@@ -343,6 +385,11 @@ export function decideAllocation(inp: AllocationInputs) {
     actualMstrShare,
     cryptoWeight,
     cryptoValue,
+    leftSideProtectionActive,
+    leftSideProtectionMessage: leftSideProtectionActive
+      ? '熊底保護啟動：BTC 低於 200 日均線且 MSTR/BTC 比值走弱，MSTR 目標上限暫降至 60%。'
+      : '',
+    tacticalSwapAlert,
     decisions,
     overall,
   }

@@ -1,10 +1,12 @@
 'use client'
 
+import { useState } from 'react'
 import useSWR from 'swr'
+import { DarkTooltip } from '@/components/charts/dark-tooltip'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Coins, RefreshCw, AlertTriangle } from 'lucide-react'
+import { Coins, RefreshCw, AlertTriangle, ShieldAlert, ArrowLeftRight } from 'lucide-react'
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -37,6 +39,43 @@ const fmtUsd = (v: number | null | undefined, digits = 0) =>
 
 const fmtTime = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString('zh-TW', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—'
+
+type ChartRange = '1Y' | '3Y' | 'ALL'
+const RANGE_WEEKS: Record<ChartRange, number | null> = { '1Y': 52, '3Y': 156, ALL: null }
+
+/** 依時間區間切片；對數座標時把 <= 0 的值改成 null，避免 Recharts log scale 報錯 */
+function prepareBtcChartData(
+  rows: Array<{ t: string; price: number | null; ma200w: number | null }>,
+  range: ChartRange,
+  isLog: boolean
+) {
+  const weeks = RANGE_WEEKS[range]
+  const sliced = weeks ? rows.slice(-weeks) : rows
+  if (!isLog) return sliced
+  const pos = (v: number | null) => (v != null && v > 0 ? v : null)
+  return sliced.map((r) => ({ ...r, price: pos(r.price), ma200w: pos(r.ma200w) }))
+}
+
+/** 小型切換按鈕群組 */
+function Toggle<T extends string>({ options, value, onChange }: { options: { v: T; label: string }[]; value: T; onChange: (v: T) => void }) {
+  return (
+    <div className="inline-flex overflow-hidden rounded-md border border-border/50 text-[11px]">
+      {options.map((o) => (
+        <button
+          key={o.v}
+          type="button"
+          onClick={() => onChange(o.v)}
+          aria-pressed={value === o.v}
+          className={`px-2 py-0.5 transition-colors ${
+            value === o.v ? 'bg-primary text-primary-foreground' : 'bg-background/40 text-muted-foreground hover:bg-muted/40'
+          }`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 /** 半圓儀表：0 = 底部、100 = 頂部 */
 function CycleGauge({ score }: { score: number }) {
@@ -76,6 +115,8 @@ export function BtcMstrDashboard() {
     refreshInterval: 60_000, // 每分鐘自動更新
     revalidateOnFocus: true,
   })
+  const [isLog, setIsLog] = useState(false)
+  const [range, setRange] = useState<ChartRange>('3Y')
 
   if (isLoading) {
     return <div className="py-20 text-center text-sm text-muted-foreground">正在抓取報價與鏈上指標…</div>
@@ -94,6 +135,9 @@ export function BtcMstrDashboard() {
   const { prices, cycle, mstr, allocation, charts, sources, holdings } = data
   const overall = LIGHT_STYLE[allocation.overall as Light]
   const anyStale = sources.some((s: any) => s.stale)
+  const btcChartData = prepareBtcChartData(charts.btc ?? [], range, isLog)
+  const zScore: number | null = mstr.zScore60d ?? null
+  const swap = allocation.tacticalSwapAlert as { active: boolean; zScore: number | null; message: string } | undefined
 
   return (
     <div className="space-y-6">
@@ -132,6 +176,16 @@ export function BtcMstrDashboard() {
         <div className="flex items-center gap-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-300">
           <AlertTriangle className="size-4" />
           部分資料來源暫時抓不到，正在使用上次的快取，燈號僅供參考。
+        </div>
+      )}
+
+      {allocation.leftSideProtectionActive && (
+        <div className="flex items-start gap-2 rounded-lg border border-sky-400/40 bg-sky-400/10 px-3 py-2 text-xs text-sky-200">
+          <ShieldAlert className="mt-0.5 size-4 shrink-0" />
+          <div>
+            <div className="font-bold">熊底左側保護啟動</div>
+            <div>{allocation.leftSideProtectionMessage}</div>
+          </div>
         </div>
       )}
 
@@ -233,42 +287,101 @@ export function BtcMstrDashboard() {
       {/* MSTR 溢價 */}
       <Card className="border-border/40 bg-card/60">
         <CardHeader className="pb-2">
-          <CardTitle className="text-base">MSTR 溢價（mNAV）</CardTitle>
+          <CardTitle className="text-base">MSTR 溢價（EV mNAV）</CardTitle>
           <CardDescription className="text-xs">
-            mNAV ＝ MSTR 市值 ÷ 公司持有 BTC 的價值。低於 1.5 偏便宜、高於 2.5 偏貴。市值以 SEC 最新季報稀釋股數估算，未含債務與特別股。
+            EV mNAV ＝（MSTR 市值＋淨負債＋優先股）÷ 公司持有 BTC 的價值，為主要判斷依據；純市值 mNAV 僅供對照。低於 1.5 偏便宜、高於 2.5 偏貴。淨負債、優先股與股數覆蓋可在「系統設定」調整。
           </CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {[
-            { k: 'mNAV', v: mstr.mnav != null ? `${mstr.mnav.toFixed(2)} 倍` : '—', s: mstr.mnavLabel },
+            { k: 'EV mNAV（主要）', v: mstr.evMnav != null ? `${mstr.evMnav.toFixed(2)} 倍` : '—', s: mstr.mnavLabel, main: true },
+            { k: '純市值 mNAV（對照）', v: mstr.mnav != null ? `${mstr.mnav.toFixed(2)} 倍` : '—', s: '市值 ÷ 持幣價值，未含負債' },
+            {
+              k: 'MSTR/BTC 60D Z-Score',
+              v: zScore != null ? zScore.toFixed(2) : '—',
+              s: zScore == null ? '資料不足' : zScore >= 2 ? '相對 BTC 過熱' : zScore <= -2 ? '相對 BTC 偏弱' : '正常區間',
+              warn: zScore != null && Math.abs(zScore) >= 2,
+            },
             { k: '持有 BTC', v: mstr.btcHeld != null ? `${mstr.btcHeld.toLocaleString()} 顆` : '—', s: 'CoinGecko' },
             { k: 'MSTR 市值（估）', v: mstr.marketCap ? `$${(mstr.marketCap / 1e9).toFixed(1)}B` : '—', s: `股數截至 ${mstr.sharesPeriodEnd ?? '—'}` },
             { k: '持幣價值', v: mstr.btcNav ? `$${(mstr.btcNav / 1e9).toFixed(1)}B` : '—', s: '持有 BTC × 即時價' },
-          ].map((x) => (
-            <div key={x.k} className="rounded-lg border border-border/30 bg-background/40 p-3">
+            {
+              k: '稀釋股數',
+              v: mstr.dilutedShares ? `${(mstr.dilutedShares / 1e6).toFixed(1)}M` : '—',
+              s: mstr.mstrDilutedSharesOverride ? '使用手動覆蓋值' : '自動抓 SEC',
+            },
+          ].map((x: { k: string; v: string; s: string; main?: boolean; warn?: boolean }) => (
+            <div
+              key={x.k}
+              className={`rounded-lg border p-3 ${
+                x.main ? 'border-indigo-400/40 bg-indigo-500/10' : x.warn ? 'border-amber-400/40 bg-amber-400/10' : 'border-border/30 bg-background/40'
+              }`}
+            >
               <div className="text-xs text-muted-foreground">{x.k}</div>
-              <div className="text-lg font-bold tabular-nums text-foreground">{x.v}</div>
+              <div className={`text-lg font-bold tabular-nums ${x.main ? 'text-indigo-200' : x.warn ? 'text-amber-300' : 'text-foreground'}`}>{x.v}</div>
               <div className="text-[11px] text-muted-foreground">{x.s}</div>
             </div>
           ))}
         </CardContent>
       </Card>
 
+      {swap?.active && (
+        <Card className="border-amber-400/40 bg-amber-400/10">
+          <CardContent className="flex items-start gap-3 p-4 text-xs">
+            <ArrowLeftRight className="mt-0.5 size-5 shrink-0 text-amber-300" />
+            <div>
+              <div className="text-sm font-bold text-amber-300">
+                戰術換倉警示（MSTR/BTC 60D Z-Score {swap.zScore != null ? swap.zScore.toFixed(2) : '—'}）
+              </div>
+              <div className="mt-0.5 leading-relaxed text-amber-100/90">{swap.message}</div>
+              <div className="mt-1 text-[11px] text-muted-foreground">Z-Score ≥ 2.0 觸發；僅為參考，實際換倉請自行判斷。</div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* 圖表 */}
       <div className="grid gap-6 lg:grid-cols-2">
         <Card className="border-border/40 bg-card/60">
           <CardHeader className="pb-2">
-            <CardTitle className="text-base">BTC 週線與 200 週均線（近 3 年）</CardTitle>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <CardTitle className="text-base">BTC 週線與 200 週均線</CardTitle>
+              <div className="flex items-center gap-2">
+                <Toggle<ChartRange>
+                  options={[
+                    { v: '1Y', label: '1Y' },
+                    { v: '3Y', label: '3Y' },
+                    { v: 'ALL', label: 'ALL' },
+                  ]}
+                  value={range}
+                  onChange={setRange}
+                />
+                <Toggle<'linear' | 'log'>
+                  options={[
+                    { v: 'linear', label: '線性' },
+                    { v: 'log', label: 'Log' },
+                  ]}
+                  value={isLog ? 'log' : 'linear'}
+                  onChange={(v) => setIsLog(v === 'log')}
+                />
+              </div>
+            </div>
           </CardHeader>
           <CardContent className="h-64">
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={charts.btc}>
+              <ComposedChart data={btcChartData}>
                 <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
                 <XAxis dataKey="t" tick={{ fontSize: 10 }} minTickGap={40} />
-                <YAxis tick={{ fontSize: 10 }} width={55} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
-                <Tooltip formatter={(v: any) => fmtUsd(v)} />
+                <YAxis
+                  tick={{ fontSize: 10 }}
+                  width={55}
+                  scale={isLog ? 'log' : 'auto'}
+                  domain={['auto', 'auto']}
+                  tickFormatter={(v) => `${Math.round(v / 1000)}k`}
+                />
+                <Tooltip content={<DarkTooltip valueFormatter={(v) => fmtUsd(v)} />} />
                 <Line type="monotone" dataKey="price" name="BTC" stroke="#f59e0b" dot={false} strokeWidth={2} />
-                <Line type="monotone" dataKey="ma200w" name="200 週均線" stroke="#6366f1" dot={false} strokeWidth={2} />
+                <Line type="monotone" dataKey="ma200w" name="200 週均線" stroke="#6366f1" dot={false} strokeWidth={2} connectNulls />
               </ComposedChart>
             </ResponsiveContainer>
           </CardContent>
@@ -284,7 +397,7 @@ export function BtcMstrDashboard() {
                 <CartesianGrid strokeDasharray="3 3" opacity={0.15} />
                 <XAxis dataKey="t" tick={{ fontSize: 10 }} minTickGap={40} />
                 <YAxis tick={{ fontSize: 10 }} width={45} domain={['auto', 'auto']} />
-                <Tooltip />
+                <Tooltip content={<DarkTooltip valueFormatter={(v) => v.toFixed(3)} />} />
                 <Line type="monotone" dataKey="ratio" name="MSTR/BTC" stroke="#818cf8" dot={false} strokeWidth={2} />
               </LineChart>
             </ResponsiveContainer>

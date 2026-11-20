@@ -5,7 +5,8 @@ import { valuePortfolio } from '@/lib/valuation'
 import { usePWA } from '@/hooks/use-pwa'
 import { AddCategoryDialog } from './add-category-dialog'
 import { CategoryCard } from './category-card'
-import { PortfolioChart } from './portfolio-chart'
+import { PortfolioChart, AllocationCompareChart } from './portfolio-chart'
+import { PortfolioAnalyticsPanel } from './portfolio-analytics-panel'
 import { PortfolioSummary } from './portfolio-summary'
 import { CurrencySettings } from './currency-settings'
 import { Wallet, Sparkles } from 'lucide-react'
@@ -74,6 +75,12 @@ export function PortfolioManager({ hideHeader = false }: PortfolioManagerProps) 
               <PortfolioChart categories={categories} type="actual" />
               <PortfolioChart categories={categories} type="target" />
             </div>
+
+            {/* 實際 vs 目標配置對比 */}
+            <AllocationCompareChart categories={categories} />
+
+            {/* 全投組量化指標：風險曝險、每月再平衡試算、相關性矩陣 */}
+            <PortfolioAnalyticsPanel />
             
             {/* Category Cards */}
             <div className="space-y-6">

@@ -9,6 +9,9 @@ export const DEFAULT_PORTFOLIO_SETTINGS = {
   emergencyFundAmount: 0,
   soxlReserveTargetPercent: DEFAULT_SOXL_CONFIG.maxPositionPercent,
   soxlMaxPositionPercent: DEFAULT_SOXL_CONFIG.maxPositionPercent,
+  mstrNetDebtUsd: 0,
+  mstrPreferredStockUsd: 0,
+  mstrDilutedSharesOverride: null as number | null,
 }
 
 // 同一個執行環境只建表一次（雲端資料庫每次查詢都要走網路，避免重複送出建表指令）
@@ -34,6 +37,9 @@ async function createTables(): Promise<void> {
       emergency_fund_amount REAL NOT NULL DEFAULT 0,
       soxl_reserve_target_percent REAL NOT NULL DEFAULT 10.0,
       soxl_max_position_percent REAL NOT NULL DEFAULT 10.0,
+      mstr_net_debt_usd REAL NOT NULL DEFAULT 0,
+      mstr_preferred_stock_usd REAL NOT NULL DEFAULT 0,
+      mstr_diluted_shares_override REAL,
       updated_at TEXT NOT NULL
     );
 
@@ -130,6 +136,15 @@ async function createTables(): Promise<void> {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS soxl_cycle_state (
+      id TEXT PRIMARY KEY,
+      cycle_peak REAL NOT NULL,
+      cycle_peak_date TEXT NOT NULL,
+      sniper_activated_at TEXT,
+      max_drawdown_since_peak REAL NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS app_migrations (
       id TEXT PRIMARY KEY,
       applied_at TEXT NOT NULL
@@ -142,6 +157,23 @@ async function createTables(): Promise<void> {
  * 既有資料庫的結構／資料升級（每個 id 只執行一次，記錄在 app_migrations）
  */
 export async function runMigrations(): Promise<void> {
+  // MSTR Enterprise Value 參數（欄位檢查兼具舊資料庫升級與重複執行安全性）。
+  const portfolioCols = await sqlite.all<{ name: string }>('PRAGMA table_info(portfolio_settings)')
+  const portfolioColNames = new Set(portfolioCols.map((column) => column.name))
+  const portfolioMigrations = [
+    ['mstr_net_debt_usd', 'ALTER TABLE portfolio_settings ADD COLUMN mstr_net_debt_usd REAL NOT NULL DEFAULT 0'],
+    ['mstr_preferred_stock_usd', 'ALTER TABLE portfolio_settings ADD COLUMN mstr_preferred_stock_usd REAL NOT NULL DEFAULT 0'],
+    ['mstr_diluted_shares_override', 'ALTER TABLE portfolio_settings ADD COLUMN mstr_diluted_shares_override REAL'],
+  ] as const
+  for (const [column, sql] of portfolioMigrations) {
+    if (portfolioColNames.has(column)) continue
+    try {
+      await sqlite.run(sql)
+    } catch (err: any) {
+      if (!/duplicate column/i.test(String(err?.message))) throw err
+    }
+  }
+
   // 1. transactions 加 strategy_tranche 欄位（舊資料庫建表時沒有）
   const cols = await sqlite.all<{ name: string }>('PRAGMA table_info(transactions)')
   if (!cols.some((c) => c.name === 'strategy_tranche')) {

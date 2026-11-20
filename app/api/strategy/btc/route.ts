@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { sqlite } from '@/lib/db/client'
 import { ensureTablesExist } from '@/lib/db/init'
+import { loadPortfolioSettings } from '@/lib/strategies/config-loader'
 import {
   getYahooCloses,
   getBtcMvrv,
@@ -8,7 +9,7 @@ import {
   getMstrBtcHoldings,
   getMstrDilutedShares,
 } from '@/lib/market-data/external-sources'
-import { scoreCycle, decideAllocation, PHASE_INFO } from '@/lib/strategies/btc-cycle'
+import { scoreCycle, decideAllocation, PHASE_INFO, calculateEvMnav, calculateRatioZScore } from '@/lib/strategies/btc-cycle'
 
 export const dynamic = 'force-dynamic'
 
@@ -16,6 +17,7 @@ export const dynamic = 'force-dynamic'
 export async function GET() {
   try {
     await ensureTablesExist()
+    const settings = await loadPortfolioSettings()
 
     const [btcW, btcD, mstrD, mvrv, fng, holdings, shares, twd] = await Promise.all([
       getYahooCloses('BTC-USD', '10y', '1wk'), // 200 週均線需要約 4 年，圖表再往前 3 年
@@ -46,10 +48,32 @@ export async function GET() {
 
     // mNAV = MSTR 市值 ÷ 持有 BTC 價值（市值用 SEC 稀釋後股數估算，未含債務與特別股）
     const btcHeld = holdings.value
-    const dilutedShares = shares.value?.shares ?? null
+    const reportedDilutedShares = shares.value?.shares ?? null
+    const hasDilutedSharesOverride =
+      settings.mstrDilutedSharesOverride != null &&
+      Number.isFinite(settings.mstrDilutedSharesOverride) &&
+      settings.mstrDilutedSharesOverride > 0
+    const dilutedShares = hasDilutedSharesOverride ? settings.mstrDilutedSharesOverride : reportedDilutedShares
     const mstrMarketCap = dilutedShares ? dilutedShares * mstrPrice : null
     const btcNav = btcHeld ? btcHeld * btcPrice : null
     const mnav = mstrMarketCap && btcNav ? mstrMarketCap / btcNav : null
+    const evMnav =
+      dilutedShares != null && btcHeld != null
+        ? calculateEvMnav({
+            mstrPrice,
+            dilutedShares,
+            btcHeld,
+            btcPrice,
+            netDebtUsd: settings.mstrNetDebtUsd,
+            preferredStockUsd: settings.mstrPreferredStockUsd,
+          })
+        : null
+
+    const btcByDate = new Map(btcDaily.map((p) => [p.t.slice(0, 10), p.c]))
+    const ratioSeries = mstrDaily.flatMap((point) => {
+      const btcClose = btcByDate.get(point.t.slice(0, 10))
+      return btcClose != null && btcClose > 0 ? [point.c / btcClose] : []
+    })
 
     // 持倉（資產表各幣別換成美元）
     const assets = await sqlite.all<any>('SELECT symbol, quantity, current_price, cost_per_unit, currency FROM assets')
@@ -73,28 +97,31 @@ export async function GET() {
     const allocation = decideAllocation({
       cycleScore: cycle.score,
       reliable: cycle.reliable,
-      anyStale: [btcD, btcW, mstrD, mvrv, fng, holdings, shares].some((x) => x.stale),
-      mnav,
+      anyStale: [btcD, btcW, mstrD, mvrv, fng, holdings, ...(hasDilutedSharesOverride ? [] : [shares])].some((x) => x.stale),
+      mnav: evMnav,
       btcValueUsd: btcQty * btcPrice,
       mstrValueUsd: mstrQty * mstrPrice,
       totalPortfolioUsd: totalUsd,
+      btcBelow200dMa: cycle.ma200d != null && btcPrice < cycle.ma200d,
+      mstrBtcRatioFalling: (() => {
+        const recent = ratioSeries.slice(-20)
+        return recent.length === 20 && recent.at(-1)! < recent.reduce((sum, ratio) => sum + ratio, 0) / recent.length
+      })(),
+      mstrBtcZScore60d: calculateRatioZScore(ratioSeries),
     })
 
-    // 圖表：BTC 週線＋200 週均線（近 3 年）
+    // 圖表：BTC 週線＋200 週均線（回傳完整週線，前端依 1Y / 3Y / ALL 切片）
     const wk = btcW.value || []
-    const chart = wk
-      .map((p, i) => {
-        const win = wk.slice(Math.max(0, i - 199), i + 1)
-        return {
-          t: p.t.slice(0, 10),
-          price: Math.round(p.c),
-          ma200w: win.length === 200 ? Math.round(win.reduce((a, b) => a + b.c, 0) / 200) : null,
-        }
-      })
-      .slice(-156)
+    const chart = wk.map((p, i) => {
+      const win = wk.slice(Math.max(0, i - 199), i + 1)
+      return {
+        t: p.t.slice(0, 10),
+        price: Math.round(p.c),
+        ma200w: win.length === 200 ? Math.round(win.reduce((a, b) => a + b.c, 0) / 200) : null,
+      }
+    })
 
     // MSTR / BTC 比值（近 1 年，日線對齊日期）
-    const btcByDate = new Map(btcDaily.map((p) => [p.t.slice(0, 10), p.c]))
     const ratioChart = mstrDaily
       .map((p) => {
         const b = btcByDate.get(p.t.slice(0, 10))
@@ -122,8 +149,12 @@ export async function GET() {
       },
       mstr: {
         mnav,
+        evMnav,
         btcHeld,
         dilutedShares,
+        reportedDilutedShares,
+        mstrDilutedSharesOverride: settings.mstrDilutedSharesOverride,
+        zScore60d: calculateRatioZScore(ratioSeries),
         sharesPeriodEnd: shares.value?.periodEnd ?? null,
         marketCap: mstrMarketCap,
         btcNav,

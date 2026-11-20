@@ -46,12 +46,38 @@ export function yoySeries(rows: { ym: string; revenue: number }[]) {
     .filter((x): x is { ym: string; yoy: number } => x != null)
 }
 
+/** 以近三個月營收總和計算年增率，降低春節月份移動造成的單月失真。 */
+export function tsmc3mmaYoySeries(rows: { ym: string; revenue: number }[]) {
+  const sorted = [...rows].sort((a, b) => a.ym.localeCompare(b.ym))
+  const map = new Map(sorted.map((row) => [row.ym, row.revenue]))
+  const shiftMonth = (ym: string, offset: number) => {
+    const [year, month] = ym.split('-').map(Number)
+    const date = new Date(Date.UTC(year, month - 1 + offset, 1))
+    return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`
+  }
+  return sorted.flatMap(({ ym }) => {
+    const currentMonths = [0, 1, 2].map((offset) => shiftMonth(ym, -offset))
+    const priorMonths = currentMonths.map((month) => shiftMonth(month, -12))
+    const values = [...currentMonths, ...priorMonths].map((month) => map.get(month))
+    if (values.some((value) => value == null || !Number.isFinite(value))) return []
+    const numericValues = values as number[]
+    const current = numericValues.slice(0, 3).reduce((sum, value) => sum + value, 0)
+    const prior = numericValues.slice(3).reduce((sum, value) => sum + value, 0)
+    if (prior <= 0) return []
+    return [{ ym, yoy: (current / prior - 1) * 100 }]
+  })
+}
+
 export interface MacroInputs {
   unemployment: number[] | null
   tnx: number | null // 10 年期殖利率（%）
   irx: number | null // 13 週國庫券殖利率（%）
   vix: number | null
+  vix5dHigh?: number | null
   hygIefChange3m: number | null // HYG/IEF 比值 3 個月變化（%）
+  tnxSlope60d?: number | null
+  dxyChange60d?: number | null
+  soxxQqqChange60d?: number | null
   tsmcRevenue: { ym: string; revenue: number }[] | null
   soxxPeakTo200w: number | null // 本輪高點時，SOXX ÷ 當時 200 週均線
 }
@@ -103,23 +129,60 @@ export function evaluateMacro(inp: MacroInputs) {
     key: 'vix',
     label: 'VIX 恐慌指數',
     value: inp.vix != null ? inp.vix.toFixed(1) : '—',
-    light: inp.vix == null ? 'gray' : inp.vix >= C.vixPanic ? 'green' : 'yellow',
-    note: `≥ ${C.vixPanic} 屬恐慌性下跌，通常是較好的狙擊點`,
+    light:
+      inp.vix == null
+        ? 'gray'
+        : inp.vix >= C.vixPanic
+        ? inp.vix5dHigh != null && inp.vix < inp.vix5dHigh * 0.9
+          ? 'green'
+          : 'yellow'
+        : 'yellow',
+    note:
+      inp.vix != null && inp.vix >= C.vixPanic
+        ? inp.vix5dHigh != null && inp.vix < inp.vix5dHigh * 0.9
+          ? '恐慌見頂回落，較佳狙擊點'
+          : '恐慌衝高中，留意續跌'
+        : `低於 ${C.vixPanic}，持續觀察市場波動`,
     source: 'Yahoo ^VIX',
   })
 
-  const yoy = inp.tsmcRevenue ? yoySeries(inp.tsmcRevenue) : []
+  const yoy = inp.tsmcRevenue ? tsmc3mmaYoySeries(inp.tsmcRevenue) : []
   const last3 = yoy.slice(-C.tsmcNegativeMonths)
-  const negMonths = last3.filter((x) => x.yoy < 0).length
+  const negPeriods = last3.filter((x) => x.yoy < 0).length
+  const consecutiveLast3 =
+    last3.length === C.tsmcNegativeMonths &&
+    last3.every((point, index) => {
+      if (index === 0) return true
+      const [year, month] = last3[index - 1].ym.split('-').map(Number)
+      const next = new Date(Date.UTC(year, month, 1))
+      return point.ym === `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}`
+    })
   const lastYoy = yoy.at(-1)
   checks.push({
     key: 'tsmc',
-    label: '台積電月營收年增率',
+    label: '台積電 3MMA 營收年增率',
     value: lastYoy ? `${lastYoy.yoy.toFixed(1)}%（${lastYoy.ym}）` : '—',
-    light: !lastYoy ? 'gray' : negMonths >= C.tsmcNegativeMonths ? 'red' : negMonths > 0 ? 'yellow' : 'green',
-    note: `連續 ${C.tsmcNegativeMonths} 個月衰退代表半導體產業倒退`,
+    light: !lastYoy ? 'gray' : consecutiveLast3 && negPeriods === C.tsmcNegativeMonths ? 'red' : negPeriods > 0 ? 'yellow' : 'green',
+    note: `近 ${C.tsmcNegativeMonths} 期任一期衰退為黃燈，連續 ${C.tsmcNegativeMonths} 期衰退為紅燈`,
     source: 'FinMind',
   })
+
+  const auxiliaryChecks: { key: string; label: string; value: number | null | undefined; threshold: number; test: (value: number) => boolean; note: string; source: string }[] = [
+    { key: 'tnxSlope60d', label: '10 年期殖利率 60 日變化', value: inp.tnxSlope60d, threshold: 0.5, test: (value) => value >= 0.5, note: '上升至少 0.5 個百分點代表利率壓力升高', source: 'Yahoo ^TNX' },
+    { key: 'dxyChange60d', label: '美元指數 60 日變化', value: inp.dxyChange60d, threshold: 5, test: (value) => value >= 5, note: '上升至少 5% 代表美元走強壓力升高', source: 'Yahoo DX-Y.NYB' },
+    { key: 'soxxQqqChange60d', label: 'SOXX / QQQ 比值 60 日變化', value: inp.soxxQqqChange60d, threshold: -10, test: (value) => value <= -10, note: '下跌至少 10% 代表半導體相對科技股轉弱', source: 'Yahoo SOXX / QQQ' },
+  ]
+  for (const indicator of auxiliaryChecks) {
+    const value = indicator.value
+    checks.push({
+      key: indicator.key,
+      label: indicator.label,
+      value: value == null ? '—' : `${value.toFixed(1)}%`,
+      light: value == null ? 'gray' : indicator.test(value) ? 'yellow' : 'green',
+      note: indicator.note,
+      source: indicator.source,
+    })
+  }
 
   checks.push({
     key: 'bubble',
@@ -135,14 +198,14 @@ export function evaluateMacro(inp: MacroInputs) {
   let verdict: MacroVerdict
   // 決定性指標（營收、Sahm、信用）任一缺值，就不能下「可狙擊」結論
   const keyMissing = ['tsmc', 'sahm', 'credit'].some((k) => by(k).light === 'gray')
-  if (known < 3) verdict = 'UNKNOWN'
+  if (known < 3 || keyMissing) verdict = 'UNKNOWN'
   // 產業倒退：台積電營收連續衰退；泡沫破裂：前波過熱「而且」營收已開始轉弱
   else if (by('tsmc').light === 'red' || (by('bubble').light === 'red' && by('tsmc').light === 'yellow'))
     verdict = 'STRUCTURAL'
   else if (by('sahm').light === 'red' || by('credit').light === 'red') verdict = 'RECESSION'
-  else if (keyMissing) verdict = 'UNKNOWN'
   else if (by('bubble').light === 'red') verdict = 'OVERHEAT'
-  else verdict = 'PANIC'
+  else if (by('tsmc').light === 'green' && by('sahm').light === 'green' && by('credit').light === 'green') verdict = 'PANIC'
+  else verdict = 'UNKNOWN'
 
   return { verdict, ...VERDICT_INFO[verdict], checks, sahm, spread, tsmcYoy: yoy.slice(-12) }
 }

@@ -63,8 +63,9 @@ export async function PUT(request: Request) {
       `
       INSERT INTO portfolio_settings (
         id, display_currency, exchange_rate, monthly_investment_amount,
-        emergency_fund_amount, soxl_reserve_target_percent, soxl_max_position_percent, updated_at
-      ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?)
+        emergency_fund_amount, soxl_reserve_target_percent, soxl_max_position_percent,
+        mstr_net_debt_usd, mstr_preferred_stock_usd, mstr_diluted_shares_override, updated_at
+      ) VALUES ('default', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         display_currency = excluded.display_currency,
         exchange_rate = excluded.exchange_rate,
@@ -72,6 +73,9 @@ export async function PUT(request: Request) {
         emergency_fund_amount = excluded.emergency_fund_amount,
         soxl_reserve_target_percent = excluded.soxl_reserve_target_percent,
         soxl_max_position_percent = excluded.soxl_max_position_percent,
+        mstr_net_debt_usd = excluded.mstr_net_debt_usd,
+        mstr_preferred_stock_usd = excluded.mstr_preferred_stock_usd,
+        mstr_diluted_shares_override = excluded.mstr_diluted_shares_override,
         updated_at = excluded.updated_at
     `,
       [
@@ -81,6 +85,9 @@ export async function PUT(request: Request) {
         merged.emergencyFundAmount,
         merged.soxlReserveTargetPercent,
         merged.soxlMaxPositionPercent,
+        merged.mstrNetDebtUsd ?? 0,
+        merged.mstrPreferredStockUsd ?? 0,
+        merged.mstrDilutedSharesOverride ?? null,
         now,
       ]
     )
