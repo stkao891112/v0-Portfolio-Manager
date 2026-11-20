@@ -18,7 +18,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { Receipt, Plus, Download, Trash2 } from 'lucide-react'
+import { Receipt, Plus, Download, Trash2, Search, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
+import { filterAndSortLedger, summarizeLedger, type LedgerSortKey } from '@/lib/ledger-view'
 import { toast } from 'sonner'
 import { usePortfolioStore } from '@/lib/portfolio-store'
 
@@ -57,6 +58,35 @@ export function TradeLedger() {
   const [isOpen, setIsOpen] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<Transaction | null>(null)
+
+  // 搜尋、篩選、排序（作用於已載入的紀錄）
+  const [search, setSearch] = useState('')
+  const [symbolFilter, setSymbolFilter] = useState('ALL')
+  const [typeFilter, setTypeFilter] = useState('ALL')
+  const [sortKey, setSortKey] = useState<LedgerSortKey>('date')
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const symbolOptions = useMemo(() => [...new Set(transactions.map((t) => t.symbol))].sort(), [transactions])
+  const view = useMemo(
+    () => filterAndSortLedger(transactions, { search, symbol: symbolFilter, type: typeFilter, sortKey, sortDir }),
+    [transactions, search, symbolFilter, typeFilter, sortKey, sortDir]
+  )
+  const totals = useMemo(() => summarizeLedger(view), [view])
+  const toggleSort = (k: LedgerSortKey) => {
+    if (sortKey === k) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    else {
+      setSortKey(k)
+      setSortDir(k === 'symbol' ? 'asc' : 'desc')
+    }
+  }
+  const sortIcon = (k: LedgerSortKey) =>
+    sortKey !== k ? (
+      <ArrowUpDown className="inline size-3 opacity-50" />
+    ) : sortDir === 'asc' ? (
+      <ArrowUp className="inline size-3" />
+    ) : (
+      <ArrowDown className="inline size-3" />
+    )
+  const filtered = search.trim() !== '' || symbolFilter !== 'ALL' || typeFilter !== 'ALL'
 
   // New form fields
   const [assetId, setAssetId] = useState<string>(MANUAL)
@@ -414,6 +444,62 @@ export function TradeLedger() {
         </div>
       </div>
 
+      {/* 搜尋與篩選列 */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <div className="relative sm:w-64">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="搜尋代號、備註、日期"
+            className="h-8 pl-8 text-xs"
+            aria-label="搜尋交易紀錄"
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-2 sm:flex">
+          <Select value={symbolFilter} onValueChange={setSymbolFilter}>
+            <SelectTrigger className="h-8 w-full text-xs sm:w-36" aria-label="篩選標的">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">全部標的</SelectItem>
+              {symbolOptions.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {s}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={typeFilter} onValueChange={setTypeFilter}>
+            <SelectTrigger className="h-8 w-full text-xs sm:w-32" aria-label="篩選類型">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">全部類型</SelectItem>
+              {Object.entries(TYPE_LABEL).map(([k, v]) => (
+                <SelectItem key={k} value={k}>
+                  {v}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        {filtered && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-8 text-xs text-muted-foreground"
+            onClick={() => {
+              setSearch('')
+              setSymbolFilter('ALL')
+              setTypeFilter('ALL')
+            }}
+          >
+            清除篩選
+          </Button>
+        )}
+      </div>
+
       {/* Transactions Table Card */}
       <Card className="border-border/40 bg-card/60 backdrop-blur-xl">
         <CardContent className="p-0">
@@ -421,27 +507,47 @@ export function TradeLedger() {
             <table className="w-full text-left text-xs">
               <thead className="border-b border-border/40 bg-muted/20 text-muted-foreground">
                 <tr>
-                  <th className="p-3 font-medium">日期</th>
-                  <th className="p-3 font-medium">標的</th>
+                  <th className="p-3 font-medium">
+                    <button onClick={() => toggleSort('date')} className="flex items-center gap-1 hover:text-foreground">
+                      日期 {sortIcon('date')}
+                    </button>
+                  </th>
+                  <th className="p-3 font-medium">
+                    <button onClick={() => toggleSort('symbol')} className="flex items-center gap-1 hover:text-foreground">
+                      標的 {sortIcon('symbol')}
+                    </button>
+                  </th>
                   <th className="p-3 font-medium">類型</th>
                   <th className="p-3 font-medium text-right">數量</th>
                   <th className="p-3 font-medium text-right">單價</th>
-                  <th className="p-3 font-medium text-right">總金額</th>
+                  <th className="p-3 font-medium text-right">
+                    <button onClick={() => toggleSort('amount')} className="ml-auto flex items-center gap-1 hover:text-foreground">
+                      總金額 {sortIcon('amount')}
+                    </button>
+                  </th>
                   <th className="p-3 font-medium text-right">手續費</th>
-                  <th className="p-3 font-medium text-right">已實現損益</th>
+                  <th className="p-3 font-medium text-right">
+                    <button onClick={() => toggleSort('realizedPnl')} className="ml-auto flex items-center gap-1 hover:text-foreground">
+                      已實現損益 {sortIcon('realizedPnl')}
+                    </button>
+                  </th>
                   <th className="p-3 font-medium">備註</th>
                   <th className="p-3 font-medium"></th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-border/20 font-mono">
-                {transactions.length === 0 ? (
+              <tbody className="divide-y divide-border/20 font-mono tabular-nums">
+                {view.length === 0 ? (
                   <tr>
                     <td colSpan={10} className="text-center py-12 text-muted-foreground font-sans">
-                      {loading ? '讀取中…' : '目前尚無交易明細紀錄。點選右上角「新增交易紀錄」以開始記錄。'}
+                      {loading
+                        ? '讀取中…'
+                        : transactions.length > 0
+                        ? '沒有符合篩選條件的交易。'
+                        : '目前尚無交易明細紀錄。點選右上角「新增交易紀錄」以開始記錄。'}
                     </td>
                   </tr>
                 ) : (
-                  transactions.map((tx) => {
+                  view.map((tx) => {
                     const totalAmount = tx.quantity * tx.price
                     const isBuy = tx.type === 'BUY' || tx.type === 'INITIAL_BALANCE'
                     const cur = tx.currency === 'USD' ? '$' : 'NT$'
@@ -511,11 +617,54 @@ export function TradeLedger() {
                   })
                 )}
               </tbody>
+              {totals.length > 0 && (
+                <tfoot className="border-t-2 border-border bg-muted/30 font-mono tabular-nums">
+                  {totals.map((t) => {
+                    const c = t.currency === 'USD' ? '$' : 'NT$'
+                    const fmt = (n: number) => Math.round(n).toLocaleString()
+                    return (
+                      <tr key={t.currency} className="text-foreground">
+                        <td colSpan={2} className="p-3 font-sans font-semibold whitespace-nowrap">
+                          合計（{t.currency}，{t.count} 筆）
+                        </td>
+                        <td colSpan={3} className="p-3 text-right whitespace-nowrap">
+                          <span className="font-sans text-[11px] text-muted-foreground">總買入 </span>
+                          {c}
+                          {fmt(t.buyAmount)}
+                        </td>
+                        <td className="p-3 text-right whitespace-nowrap">
+                          <span className="font-sans text-[11px] text-muted-foreground">總賣出 </span>
+                          {c}
+                          {fmt(t.sellAmount)}
+                        </td>
+                        <td className="p-3 text-right whitespace-nowrap">
+                          {c}
+                          {t.fees.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                        </td>
+                        <td
+                          className={`p-3 text-right font-semibold whitespace-nowrap ${
+                            t.realizedPnl >= 0 ? 'text-success' : 'text-destructive'
+                          }`}
+                        >
+                          {t.realizedPnl >= 0 ? '+' : ''}
+                          {c}
+                          {t.realizedPnl.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                        </td>
+                        <td colSpan={2} className="p-3 font-sans text-[11px] text-muted-foreground whitespace-nowrap">
+                          累計已實現
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tfoot>
+              )}
             </table>
           </div>
           <div className="flex items-center justify-between border-t border-border/30 px-3 py-2 text-[11px] text-muted-foreground">
             <span>
-              共 {total} 筆，已顯示 {transactions.length} 筆
+              共 {total} 筆，已載入 {transactions.length} 筆
+              {filtered ? `，符合篩選 ${view.length} 筆` : ''}
+              {hasMore ? '（彙總只計已載入的紀錄）' : ''}
             </span>
             {hasMore && (
               <Button

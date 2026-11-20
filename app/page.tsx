@@ -1,103 +1,91 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import React, { Suspense, useCallback, useEffect, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useDbMode, DB_LABEL } from '@/hooks/use-db-mode'
-import { MainNav, NavTab } from '@/components/navigation/main-nav'
+import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
+import { AppSidebar } from '@/components/navigation/app-sidebar'
+import { TickerBar } from '@/components/navigation/ticker-bar'
+import { CommandPalette } from '@/components/navigation/command-palette'
 import { OverviewDashboard } from '@/components/dashboard/overview-dashboard'
 import { PortfolioManager } from '@/components/portfolio-manager'
 import { SoxlDashboard } from '@/components/strategies/soxl/soxl-dashboard'
 import { BtcMstrDashboard } from '@/components/strategies/btc/btc-mstr-dashboard'
 import { TradeLedger } from '@/components/ledger/trade-ledger'
 import { SystemSettings } from '@/components/settings/system-settings'
-import { ParticleBackground } from '@/components/particle-background'
 import { CurrencySettings } from '@/components/currency-settings'
 import { AddCategoryDialog } from '@/components/add-category-dialog'
 import { usePortfolioStore } from '@/lib/portfolio-store'
-import { ShieldCheck, Terminal } from 'lucide-react'
+import { NAV_TABS, parseTab, tabHref, type NavTab } from '@/lib/nav'
 
-export default function Home() {
+function HomeInner() {
   const dbMode = useDbMode()
-  const [currentTab, setCurrentTab] = useState<NavTab>('dashboard')
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  // 分頁狀態以 URL ?tab= 為準：支援重新整理與上一頁
+  const currentTab = parseTab(searchParams.get('tab'))
+  const setCurrentTab = useCallback((tab: NavTab) => router.push(tabHref(tab)), [router])
+  const [commandOpen, setCommandOpen] = useState(false)
   const { categories, displayCurrency, exchangeRate, refreshAll, isSyncing, isRefreshingQuotes } = usePortfolioStore()
+  const refresh = useCallback(() => void refreshAll(), [refreshAll])
 
-  // 初始化：讀資料庫 → 更新全部持倉報價（含台股 2330.TW、00662.TW、00935.TW、00830.TW）
+  // 初始化：讀資料庫 → 更新全部持倉報價
   useEffect(() => {
     void refreshAll()
   }, [refreshAll])
 
+  const title = NAV_TABS.find((t) => t.id === currentTab)?.label ?? ''
+
   return (
-    <div className="relative min-h-screen bg-background text-foreground selection:bg-primary/30">
-      <ParticleBackground />
-
-      {/* Top Application Header */}
-      <header className="sticky top-0 z-50 border-b border-border/40 bg-background/80 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4">
-          <div className="flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center rounded-xl bg-primary/10 glow-primary border border-primary/30">
-              <Terminal className="size-5 text-primary" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h1 className="text-base font-bold text-foreground tracking-tight">
-                  Claude 投資決策與資產管理系統
-                </h1>
-                <span className="hidden sm:inline-block rounded px-1.5 py-0.5 text-[10px] font-mono bg-primary/10 text-primary border border-primary/30">
-                  v1.0 Local
+    <SidebarProvider>
+      <AppSidebar currentTab={currentTab} onTabChange={setCurrentTab} onOpenCommand={() => setCommandOpen(true)} />
+      <SidebarInset className="min-w-0 bg-background">
+        <TickerBar
+          title={title}
+          onRefresh={refresh}
+          refreshing={isSyncing || isRefreshingQuotes}
+          actions={
+            <>
+              <CurrencySettings />
+              {currentTab === 'portfolio' && (
+                <span className="hidden sm:inline-flex">
+                  <AddCategoryDialog />
                 </span>
-              </div>
-              <p className="text-[11px] text-muted-foreground">
-                本機量化決策終端 • SOXL 狙擊 • BTC/MSTR 輪動 • 資產再平衡
-              </p>
-            </div>
-          </div>
+              )}
+            </>
+          }
+        />
 
-          <div className="flex items-center gap-3">
-            <CurrencySettings />
-            {currentTab === 'portfolio' && <AddCategoryDialog />}
-          </div>
-        </div>
-
-        {/* Global Navigation Bar */}
-        <div className="border-t border-border/30 bg-muted/10 px-4">
-          <div className="mx-auto max-w-7xl">
-            <MainNav
-              currentTab={currentTab}
-              onTabChange={setCurrentTab}
-              onRefresh={() => void refreshAll()}
-              refreshing={isSyncing || isRefreshingQuotes}
+        <div className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-6">
+          {currentTab === 'dashboard' && (
+            <OverviewDashboard
+              categories={categories}
+              displayCurrency={displayCurrency}
+              exchangeRate={exchangeRate}
+              onNavigateTab={setCurrentTab}
             />
-          </div>
+          )}
+          {currentTab === 'portfolio' && <PortfolioManager hideHeader={true} />}
+          {currentTab === 'soxl' && <SoxlDashboard />}
+          {currentTab === 'btc' && <BtcMstrDashboard />}
+          {currentTab === 'ledger' && <TradeLedger />}
+          {currentTab === 'settings' && <SystemSettings />}
         </div>
-      </header>
 
-      {/* Main Tab Content */}
-      <main className="relative z-10 mx-auto max-w-7xl px-4 py-8">
-        {currentTab === 'dashboard' && (
-          <OverviewDashboard
-            categories={categories}
-            displayCurrency={displayCurrency}
-            exchangeRate={exchangeRate}
-            onNavigateTab={setCurrentTab}
-          />
-        )}
+        <footer className="border-t border-border px-4 py-4 text-center text-[11px] text-muted-foreground">
+          {dbMode ? DB_LABEL[dbMode].long : '資料庫連線中'} • 決策規則經程式明確判定 • 資料僅供參考，投資有風險，請謹慎評估
+        </footer>
+      </SidebarInset>
 
-        {currentTab === 'portfolio' && <PortfolioManager hideHeader={true} />}
+      <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} onNavigate={setCurrentTab} onRefresh={refresh} />
+    </SidebarProvider>
+  )
+}
 
-        {currentTab === 'soxl' && <SoxlDashboard />}
-
-        {currentTab === 'btc' && <BtcMstrDashboard />}
-
-        {currentTab === 'ledger' && <TradeLedger />}
-
-        {currentTab === 'settings' && <SystemSettings />}
-      </main>
-
-      {/* Footer */}
-      <footer className="relative z-10 border-t border-border/40 py-6 text-center text-xs text-muted-foreground">
-        <p>
-          Claude 投資決策系統 • {dbMode ? DB_LABEL[dbMode].long : '資料庫連線中'} • 決策規則經程式明確判定，絕無隨機臆測
-        </p>
-      </footer>
-    </div>
+export default function Home() {
+  return (
+    <Suspense fallback={<div className="min-h-screen bg-background" />}>
+      <HomeInner />
+    </Suspense>
   )
 }

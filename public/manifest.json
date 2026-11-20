@@ -4,9 +4,8 @@
   "description": "管理你的投資組合配置，追蹤加密貨幣、美股、台股等資產比例",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0a0a0f",
-  "theme_color": "#06b6d4",
-  "orientation": "portrait-primary",
+  "background_color": "#14161a",
+  "theme_color": "#14161a",
   "icons": [
     {
       "src": "/icons/icon-512x512.jpg",

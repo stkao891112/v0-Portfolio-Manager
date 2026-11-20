@@ -31,6 +31,20 @@ import { Category, Currency } from '@/lib/portfolio-types'
 import { valuePortfolio } from '@/lib/valuation'
 import { QuoteStatus } from '@/components/quote-status'
 
+interface Decision {
+  level: 'action' | 'warn' | 'ok'
+  title: string
+  detail: string
+  tab: string
+  cta: string
+}
+
+const BANNER_STYLE = {
+  action: { label: '需要行動', border: 'border-primary/60', text: 'text-primary', icon: Crosshair },
+  warn: { label: '注意', border: 'border-warning/60', text: 'text-warning', icon: AlertTriangle },
+  ok: { label: '正常', border: 'border-success/50', text: 'text-success', icon: CheckCircle2 },
+} as const
+
 interface OverviewDashboardProps {
   categories: Category[]
   displayCurrency: Currency
@@ -64,34 +78,108 @@ export function OverviewDashboard({
 
   const currencySymbol = displayCurrency === 'USD' ? '$' : 'NT$'
 
+  // 主決策排序：行動（買／賣）> 警示（需人工、資料過期、配置偏離 > 5%）> 一切正常
+  const actions: Decision[] = []
+  if (soxlSignal) {
+    const t = soxlSignal.type as string
+    const level: Decision['level'] =
+      t === 'BUY_CANDIDATE' || t === 'SELL_CANDIDATE' ? 'action' : t === 'HOLD' || t === 'WAIT' ? 'ok' : 'warn'
+    actions.push({
+      level,
+      title: `SOXL：${soxlSignal.title}`,
+      detail: soxlSignal.suggestedAction ?? soxlSignal.reason ?? '',
+      tab: 'soxl',
+      cta: '查看 SOXL 狙擊進度',
+    })
+  }
+  if (btcMain) {
+    const light = btcMain.light as string
+    actions.push({
+      level: light === 'green' || light === 'red' ? 'action' : light === 'yellow' ? 'warn' : 'ok',
+      title: `BTC／MSTR：${btcMain.title}`,
+      detail: btcMain.detail ?? '',
+      tab: 'btc',
+      cta: '查看輪動建議',
+    })
+  }
+  for (const cat of categories) {
+    const actualPct = totalValue > 0 ? ((valuation.categoryValues[cat.id] ?? 0) / totalValue) * 100 : 0
+    const targetPct = cat.targetPercent || cat.assets.reduce((s, a) => s + (a.targetPercent || 0), 0)
+    const diff = actualPct - targetPct
+    if (targetPct > 0 && Math.abs(diff) >= 5) {
+      actions.push({
+        level: 'warn',
+        title: `${cat.name} 偏離目標 ${diff > 0 ? '+' : ''}${diff.toFixed(1)}%`,
+        detail: `實際 ${actualPct.toFixed(1)}%／目標 ${targetPct}%，建議檢視再平衡試算。`,
+        tab: 'portfolio',
+        cta: '前往再平衡',
+      })
+    }
+  }
+  const rank = { action: 0, warn: 1, ok: 2 } as const
+  const sorted = [...actions].sort((a, b) => rank[a.level] - rank[b.level])
+  const mainDecision: Decision =
+    sorted[0] ??
+    ({
+      level: 'ok',
+      title: soxl || btc ? '今日無需行動，維持既定配置' : '正在讀取策略狀態…',
+      detail: '',
+      tab: 'portfolio',
+      cta: '檢視資產配置',
+    } as Decision)
+  const otherActions = sorted.slice(1).filter((a) => a.level !== 'ok')
+
   return (
     <div className="space-y-6">
-      {/* Top Banner / Today's Action */}
-      <div className="rounded-xl border border-primary/30 bg-gradient-to-r from-primary/10 via-background to-secondary/10 p-5 glow-primary">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <Badge variant="outline" className="border-primary/50 text-primary bg-primary/10">
-                系統今日狀態
-              </Badge>
-              <span className="text-xs text-muted-foreground">本機行情引擎運作中</span>
-            </div>
-            <h2 className="text-lg font-bold text-foreground">
-              {soxlSignal ? `SOXL：${soxlSignal.title}` : '正在讀取 SOXL 策略狀態…'}
-            </h2>
-            <p className="text-xs text-muted-foreground">
-              {soxlSignal?.suggestedAction ?? ''}
-            </p>
-          </div>
-          <button
-            onClick={() => onNavigateTab('soxl')}
-            className="flex items-center gap-2 self-start md:self-center rounded-lg bg-primary/20 px-4 py-2 text-sm font-semibold text-primary hover:bg-primary/30 border border-primary/40 transition-colors"
+      {/* 全域主決策橫幅：一眼看懂今日最重要的行動訊號 */}
+      {(() => {
+        const s = BANNER_STYLE[mainDecision.level]
+        const Icon = s.icon
+        return (
+          <section
+            aria-label="今日主決策"
+            className={`rounded-md border bg-card p-4 ${s.border}`}
           >
-            <span>查看 SOXL 狙擊進度</span>
-            <ArrowRight className="size-4" />
-          </button>
-        </div>
-      </div>
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div className="flex min-w-0 items-start gap-3">
+                <div className={`mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md border ${s.border} ${s.text}`}>
+                  <Icon className="size-5" />
+                </div>
+                <div className="min-w-0 space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`rounded border px-1.5 py-0.5 text-[11px] font-semibold ${s.border} ${s.text}`}>
+                      今日主決策・{s.label}
+                    </span>
+                    {otherActions.length > 0 && (
+                      <span className="text-[11px] text-muted-foreground">另有 {otherActions.length} 項待注意</span>
+                    )}
+                  </div>
+                  <h2 className="text-lg font-bold leading-snug text-foreground">{mainDecision.title}</h2>
+                  {mainDecision.detail && <p className="text-xs text-muted-foreground">{mainDecision.detail}</p>}
+                  {otherActions.length > 0 && (
+                    <ul className="flex flex-wrap gap-x-4 gap-y-1 pt-1 text-[11px] text-muted-foreground">
+                      {otherActions.map((a) => (
+                        <li key={a.title}>
+                          <button onClick={() => onNavigateTab(a.tab)} className="hover:text-foreground hover:underline">
+                            • {a.title}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={() => onNavigateTab(mainDecision.tab)}
+                className="flex shrink-0 items-center gap-2 self-start rounded-md border border-border bg-secondary px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-accent md:self-center"
+              >
+                <span>{mainDecision.cta}</span>
+                <ArrowRight className="size-4" />
+              </button>
+            </div>
+          </section>
+        )
+      })()}
 
       {/* Metric Cards Row */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

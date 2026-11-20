@@ -50,8 +50,8 @@ export function PortfolioManager({ hideHeader = false }: PortfolioManagerProps) 
         </header>
       )}
 
-      {/* Main Content */}
-      <main className="mx-auto max-w-7xl px-4 py-8">
+      {/* Main Content（嵌入首頁時外層已有 <main>，改用 div 避免巢狀） */}
+      <div className={hideHeader ? '' : 'mx-auto max-w-7xl px-4 py-8'}>
         {categories.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-24">
             <div className="mb-6 flex size-20 items-center justify-center rounded-2xl bg-primary/10 glow-primary">
@@ -103,14 +103,16 @@ export function PortfolioManager({ hideHeader = false }: PortfolioManagerProps) 
             </div>
           </div>
         )}
-      </main>
-      
-      {/* Footer */}
-      <footer className="border-t border-border/40 py-6">
-        <div className="mx-auto max-w-7xl px-4 text-center text-xs text-muted-foreground">
-          資料僅供參考，投資有風險，請謹慎評估
-        </div>
-      </footer>
+      </div>
+
+      {/* Footer（嵌入首頁時由首頁統一顯示，避免雙 footer） */}
+      {!hideHeader && (
+        <footer className="border-t border-border/40 py-6">
+          <div className="mx-auto max-w-7xl px-4 text-center text-xs text-muted-foreground">
+            資料僅供參考，投資有風險，請謹慎評估
+          </div>
+        </footer>
+      )}
     </div>
   )
 }
