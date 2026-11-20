@@ -9,7 +9,7 @@ export async function GET(request: Request) {
   try {
     await ensureTablesExist()
     const url = new URL(request.url)
-    const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit')) || 20))
+    const limit = Math.min(100, Math.max(1, Math.floor(Number(url.searchParams.get('limit')) || 20)))
     const rows = await sqlite.all<any>(
       `SELECT id, strategy_name, signal_type, symbol, price, indicator_values, trigger_condition,
               recommended_action, status, created_at, executed_at

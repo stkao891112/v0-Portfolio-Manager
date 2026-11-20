@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import type { SoxlStrategyConfig } from '@/lib/strategies/config'
+import { sellPercentToRatio } from '@/lib/strategies/sell-ratio'
 
 interface Form {
   maxPositionPercent: string
@@ -48,7 +49,7 @@ const fromForm = (f: Form) => ({
   exitTiers: f.exitTiers.map((t) => ({
     gainPercent: Number(t.gainPercent),
     // 100% 輸入時直接存 1，避免浮點誤差
-    cumulativeSellRatio: Number(t.sellPercent) >= 100 ? 1 : Number(t.sellPercent) / 100,
+    cumulativeSellRatio: sellPercentToRatio(t.sellPercent),
   })),
 })
 

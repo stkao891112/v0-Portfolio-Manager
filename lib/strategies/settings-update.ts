@@ -34,12 +34,18 @@ export function validateSoxlSettingsUpdate(raw: unknown): SoxlStrategyConfig {
   if (merged.earlyUnlockDrawdowns.length > merged.trancheCount) {
     throw new SoxlSettingsError('提前解鎖門檻數量不可多於批數')
   }
+  if (merged.earlyUnlockDrawdowns.length > 0 && merged.earlyUnlockDrawdowns[0] > merged.activateDrawdown) {
+    throw new SoxlSettingsError('第一個提前解鎖門檻不可比啟動回撤淺（需 ≤ 啟動回撤）')
+  }
   for (let i = 1; i < merged.earlyUnlockDrawdowns.length; i++) {
     if (merged.earlyUnlockDrawdowns[i] >= merged.earlyUnlockDrawdowns[i - 1]) {
       throw new SoxlSettingsError('提前解鎖門檻必須一批比一批跌得更深（例如 -40、-50、-60）')
     }
   }
   const tiers = merged.exitTiers
+  if (new Set(tiers.map((t) => t.gainPercent)).size !== tiers.length) {
+    throw new SoxlSettingsError('停利各階的獲利門檻（gainPercent）不可重複')
+  }
   for (let i = 1; i < tiers.length; i++) {
     if (tiers[i].cumulativeSellRatio <= tiers[i - 1].cumulativeSellRatio) {
       throw new SoxlSettingsError('停利各階的累計賣出比例必須遞增')

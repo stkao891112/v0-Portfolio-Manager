@@ -23,6 +23,10 @@ export interface SoxlTradeRequest {
   title: string
   /** 違規覆寫：不符合當下規則的項目（有值時必須填理由） */
   overrideViolations?: string[]
+  /** 開啟對話框當下的參考價（USD）；之後價格輪詢不會重設表單 */
+  defaultPrice?: number
+  /** 每次開啟對話框的識別碼；同一次開啟內更新違規項目（例如後端 422）不會重設表單 */
+  openToken?: number
 }
 
 interface Props {
@@ -59,10 +63,13 @@ export function SoxlTradeDialog({
   useEffect(() => {
     if (request) {
       setQuantity(String(Math.max(0, Math.floor(request.suggestedQuantity))))
-      setPrice(soxlPrice > 0 ? String(Number(soxlPrice.toFixed(4))) : '')
+      const p0 = request.defaultPrice ?? 0
+      setPrice(p0 > 0 ? String(Number(p0.toFixed(4))) : '')
       setReason('')
     }
-  }, [request, soxlPrice])
+    // 只在開啟新對話框（openToken 變更）時初始化；soxlPrice 輪詢不得清空輸入
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [request?.openToken])
 
   const q = Number(quantity)
   const p = Number(price)
@@ -71,7 +78,8 @@ export function SoxlTradeDialog({
   const amountTwd = amountUsd * exchangeRate
   const qtyAfter = isBuy ? holdingQuantity + (q || 0) : holdingQuantity - (q || 0)
   const weightBefore = totalPortfolioValueUsd > 0 ? ((holdingQuantity * p) / totalPortfolioValueUsd) * 100 : 0
-  const weightAfter = totalPortfolioValueUsd > 0 ? ((Math.max(0, qtyAfter) * p) / totalPortfolioValueUsd) * 100 : 0
+  const weightAfterDenom = Math.max(totalPortfolioValueUsd, Math.max(0, qtyAfter) * p)
+  const weightAfter = weightAfterDenom > 0 ? ((Math.max(0, qtyAfter) * p) / weightAfterDenom) * 100 : 0
   const overCap = isBuy && weightAfter > maxPositionPercent + 0.05
   const overSell = !isBuy && q > holdingQuantity
   const estPnl = !isBuy && q > 0 && p > 0 ? (p - costBasis) * q : null

@@ -134,7 +134,7 @@ export function PortfolioAnalyticsPanel() {
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* 每月新資金免賣股再平衡試算 */}
-        <Card className="border-border/40 bg-card/80">
+        <Card className="min-w-0 border-border/40 bg-card/80">
           <CardHeader className="pb-2">
             <CardTitle className="flex items-center gap-2 text-sm font-semibold text-foreground">
               <CalendarPlus className="size-4 text-primary" />
@@ -180,7 +180,7 @@ export function PortfolioAnalyticsPanel() {
         </Card>
 
         {/* 相關性矩陣熱力表 */}
-        <Card className="border-border/40 bg-card/80">
+        <Card className="min-w-0 border-border/40 bg-card/80">
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between gap-2">
               <CardTitle className="flex items-center gap-2 text-sm font-semibold text-foreground">

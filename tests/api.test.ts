@@ -307,6 +307,13 @@ describe('API 整合測試（交易帳本、設定局部更新、遷移防呆、
     const ps = await sqlite.get<any>("SELECT soxl_max_position_percent AS m FROM portfolio_settings WHERE id = 'default'")
     expect(ps.m).toBe(8)
 
+    // portfolio_settings 的 default 列不存在時，PUT 也要建立（不可靜默更新 0 筆）
+    await sqlite.run("DELETE FROM portfolio_settings WHERE id = 'default'")
+    const put2 = await strategySettingsApi.PUT(json('/api/strategy/settings', 'PUT', { config: { maxPositionPercent: 6 } }))
+    expect(put2.status).toBe(200)
+    const ps2 = await sqlite.get<any>("SELECT soxl_max_position_percent AS m FROM portfolio_settings WHERE id = 'default'")
+    expect(ps2?.m).toBe(6)
+
     const reset = await (await strategySettingsApi.PUT(json('/api/strategy/settings', 'PUT', { reset: true }))).json()
     expect(reset.config.maxPositionPercent).toBe(10)
     expect(reset.config.intervalWeeks).toBe(4)

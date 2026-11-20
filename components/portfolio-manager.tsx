@@ -88,9 +88,16 @@ export function PortfolioManager({ hideHeader = false }: PortfolioManagerProps) 
                 <h2 className="text-lg font-semibold text-foreground">
                   投資分類
                 </h2>
-                <span className="text-sm text-muted-foreground">
-                  {categories.length} 個分類
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-muted-foreground">
+                    {categories.length} 個分類
+                  </span>
+                  {categories.length > 0 && (
+                    <span className="sm:hidden">
+                      <AddCategoryDialog />
+                    </span>
+                  )}
+                </div>
               </div>
               
               {categories.map((category) => (

@@ -301,8 +301,8 @@ export function evaluateSoxlSniperStrategy(params: {
       suggestedAction: isAll
         ? '建議人工確認後，清空剩餘所有 SOXL 持倉鎖定利潤。'
         : readyTierIdx === 0
-        ? `建議賣出約 ${tierSellQty} 股（建倉總量 ${bought} 股的 ${Math.round(readyTier.cumulativeSellRatio * 3)}/3），回收部分本金。`
-        : `建議賣出約 ${tierSellQty} 股，使本輪累計賣出達建倉總量（${bought} 股）的 ${Math.round(readyTier.cumulativeSellRatio * 3)}/3。`,
+        ? `建議賣出約 ${tierSellQty} 股（建倉總量 ${bought} 股的 ${Math.round(readyTier.cumulativeSellRatio * 100)}%），回收部分本金。`
+        : `建議賣出約 ${tierSellQty} 股，使本輪累計賣出達建倉總量（${bought} 股）的 ${Math.round(readyTier.cumulativeSellRatio * 100)}%。`,
       requiresHumanConfirmation: true,
       isStaleData: false,
     }

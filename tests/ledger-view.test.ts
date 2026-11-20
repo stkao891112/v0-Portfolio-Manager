@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { filterAndSortLedger, summarizeLedger, type LedgerRow } from '@/lib/ledger-view'
+import { filterAndSortLedger, summarizeLedger, formatSignedMoney, type LedgerRow } from '@/lib/ledger-view'
 import { parseTab, tabHref } from '@/lib/nav'
 
 const rows: LedgerRow[] = [
@@ -38,3 +38,21 @@ describe('nav', () => {
     expect(tabHref('btc')).toBe('/?tab=btc')
   })
 })
+
+describe('ledger view：損益排序與金額格式', () => {
+  const pnlRows: LedgerRow[] = [
+    { ...rows[0], id: 'a', realizedPnl: null },
+    { ...rows[1], id: 'b', realizedPnl: -20 },
+    { ...rows[1], id: 'c', realizedPnl: 50 },
+  ]
+  it('依已實現損益排序時 null 永遠排最後（升冪、降冪皆同）', () => {
+    expect(filterAndSortLedger(pnlRows, { sortKey: 'realizedPnl', sortDir: 'desc' }).map((r) => r.id)).toEqual(['c', 'b', 'a'])
+    expect(filterAndSortLedger(pnlRows, { sortKey: 'realizedPnl', sortDir: 'asc' }).map((r) => r.id)).toEqual(['b', 'c', 'a'])
+  })
+  it('負數損益格式為 -$123 / -NT$123', () => {
+    expect(formatSignedMoney(-123, '$')).toBe('-$123')
+    expect(formatSignedMoney(-123, 'NT$')).toBe('-NT$123')
+    expect(formatSignedMoney(50.5, '$')).toBe('+$50.5')
+  })
+})
+

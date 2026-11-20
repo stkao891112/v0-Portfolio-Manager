@@ -19,7 +19,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { Receipt, Plus, Download, Trash2, Search, ArrowUpDown, ArrowUp, ArrowDown } from 'lucide-react'
-import { filterAndSortLedger, summarizeLedger, type LedgerSortKey } from '@/lib/ledger-view'
+import { filterAndSortLedger, summarizeLedger, formatSignedMoney, type LedgerSortKey } from '@/lib/ledger-view'
 import { toast } from 'sonner'
 import { usePortfolioStore } from '@/lib/portfolio-store'
 
@@ -598,7 +598,7 @@ export function TradeLedger() {
                         >
                           {tx.realizedPnl == null
                             ? '-'
-                            : `${tx.realizedPnl >= 0 ? '+' : ''}${cur}${tx.realizedPnl.toLocaleString(undefined, { maximumFractionDigits: 2 })}`}
+                            : formatSignedMoney(tx.realizedPnl, cur)}
                         </td>
                         <td className="p-3 font-sans text-muted-foreground max-w-[200px] truncate">{tx.notes || '-'}</td>
                         <td className="p-3">
@@ -646,9 +646,7 @@ export function TradeLedger() {
                             t.realizedPnl >= 0 ? 'text-success' : 'text-destructive'
                           }`}
                         >
-                          {t.realizedPnl >= 0 ? '+' : ''}
-                          {c}
-                          {t.realizedPnl.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                          {formatSignedMoney(t.realizedPnl, c)}
                         </td>
                         <td colSpan={2} className="p-3 font-sans text-[11px] text-muted-foreground whitespace-nowrap">
                           累計已實現

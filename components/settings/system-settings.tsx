@@ -17,7 +17,6 @@ export function SystemSettings() {
   const [exchangeRate, setExchangeRate] = useState('32.5')
   const [monthlyInvestment, setMonthlyInvestment] = useState('20000')
   const [emergencyFund, setEmergencyFund] = useState('0')
-  const [soxlMaxPosition, setSoxlMaxPosition] = useState('10')
   const [saving, setSaving] = useState(false)
   const [mstrNetDebt, setMstrNetDebt] = useState('0')
   const [mstrPreferred, setMstrPreferred] = useState('0')
@@ -41,7 +40,6 @@ export function SystemSettings() {
           setExchangeRate(String(data.settings.exchangeRate ?? 32.5))
           setMonthlyInvestment(String(data.settings.monthlyInvestmentAmount ?? 20000))
           setEmergencyFund(String(data.settings.emergencyFundAmount ?? 0))
-          setSoxlMaxPosition(String(data.settings.soxlMaxPositionPercent ?? 10))
           setMstrNetDebt(String(data.settings.mstrNetDebtUsd ?? 0))
           setMstrPreferred(String(data.settings.mstrPreferredStockUsd ?? 0))
           setMstrSharesOverride(
@@ -63,7 +61,6 @@ export function SystemSettings() {
           exchangeRate: Number(exchangeRate),
           monthlyInvestmentAmount: Number(monthlyInvestment),
           emergencyFundAmount: Number(emergencyFund),
-          soxlMaxPositionPercent: Number(soxlMaxPosition),
         }),
       })
       const data = await res.json().catch(() => ({}))
@@ -241,21 +238,9 @@ export function SystemSettings() {
               </p>
             </div>
 
-            <div className="space-y-1.5">
-              <Label className="text-xs">SOXL 持倉上限（占總資產 %）</Label>
-              <Input
-                type="number"
-                step="0.5"
-                min="0.5"
-                max="100"
-                value={soxlMaxPosition}
-                onChange={(e) => setSoxlMaxPosition(e.target.value)}
-                className="text-xs font-mono"
-              />
-              <p className="text-[11px] text-muted-foreground">
-                定案預設 10%（每批 2.5% × 4 批）；改上限時每批自動 = 上限 ÷ 4。實盤與回測共用此設定。
-              </p>
-            </div>
+            <p className="text-[11px] text-muted-foreground rounded-md border border-border/60 bg-muted/30 px-2.5 py-2">
+              SOXL 持倉上限請於下方「SOXL 狙擊策略參數」調整（單一入口，避免互相覆蓋）。
+            </p>
 
             <Button
               onClick={handleSaveSettings}

@@ -45,11 +45,23 @@ export function filterAndSortLedger<T extends LedgerRow>(rows: T[], f: LedgerFil
   const val = (r: T): number | string =>
     key === 'date' ? r.date : key === 'symbol' ? r.symbol : key === 'amount' ? amountOf(r) : r.realizedPnl ?? -Infinity
   return [...out].sort((a, b) => {
+    // 依已實現損益排序時，沒有損益（null）的列不論升降冪都固定排最後
+    if (key === 'realizedPnl') {
+      const na = a.realizedPnl == null
+      const nb = b.realizedPnl == null
+      if (na || nb) return na === nb ? 0 : na ? 1 : -1
+    }
     const va = val(a)
     const vb = val(b)
     if (va === vb) return 0
     return (va > vb ? 1 : -1) * dir
   })
+}
+
+/** 帶正負號的金額：+$123 / -$123 / -NT$123（負號放在幣別符號前） */
+export function formatSignedMoney(n: number, symbol: string, maximumFractionDigits = 2): string {
+  const sign = n >= 0 ? '+' : '-'
+  return `${sign}${symbol}${Math.abs(n).toLocaleString(undefined, { maximumFractionDigits })}`
 }
 
 /** 依幣別分開彙總（不同幣別不直接相加） */

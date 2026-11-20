@@ -40,7 +40,7 @@ export function TickerBar({ title, actions, onRefresh, refreshing }: TickerBarPr
       >
         <PanelLeft className="size-4" />
       </button>
-      <h1 className="shrink-0 text-sm font-bold text-foreground">{title}</h1>
+      <h1 className="min-w-0 truncate text-sm font-bold text-foreground">{title}</h1>
 
       <div className="hidden shrink-0 items-baseline gap-1.5 border-l border-border pl-3 sm:flex">
         <span className="text-[11px] text-muted-foreground">淨值</span>

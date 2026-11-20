@@ -24,7 +24,13 @@ function HomeInner() {
   const searchParams = useSearchParams()
   // 分頁狀態以 URL ?tab= 為準：支援重新整理與上一頁
   const currentTab = parseTab(searchParams.get('tab'))
-  const setCurrentTab = useCallback((tab: NavTab) => router.push(tabHref(tab)), [router])
+  const setCurrentTab = useCallback(
+    (tab: NavTab) => {
+      if (tab === currentTab) return // 點同分頁時不重複 push，避免多餘的歷史紀錄
+      router.push(tabHref(tab))
+    },
+    [router, currentTab]
+  )
   const [commandOpen, setCommandOpen] = useState(false)
   const { categories, displayCurrency, exchangeRate, refreshAll, isSyncing, isRefreshingQuotes } = usePortfolioStore()
   const refresh = useCallback(() => void refreshAll(), [refreshAll])

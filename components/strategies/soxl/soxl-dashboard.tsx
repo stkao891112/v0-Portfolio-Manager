@@ -106,6 +106,8 @@ export function SoxlDashboard() {
       mode: 'BUY',
       tranche: trancheId,
       suggestedQuantity: state?.suggestedBuyQuantity ?? 0,
+      defaultPrice: currentSoxlPrice,
+      openToken: Date.now(),
       title: verdict.isOverride
         ? `違規覆寫買進：第 ${trancheId} 批（${tranchePct}%）`
         : `確認買進：第 ${trancheId} 批（${tranchePct}%）`,
@@ -118,6 +120,8 @@ export function SoxlDashboard() {
       mode: 'SELL',
       exitTier: verdict.isOverride ? null : state?.exitTierReady ?? null,
       suggestedQuantity: state?.suggestedSellQuantity || state?.soxlHoldingQuantity || 0,
+      defaultPrice: currentSoxlPrice,
+      openToken: Date.now(),
       title: verdict.isOverride
         ? '違規覆寫賣出 SOXL'
         : state?.exitTierReady
@@ -161,6 +165,13 @@ export function SoxlDashboard() {
         }),
       })
       const result = await res.json().catch(() => ({}))
+      if (res.status === 422 && result?.override?.isOverride) {
+        // 前後端違規判定不同步：保留對話框並展開覆寫理由，補填後可直接重送
+        const violations: string[] = Array.isArray(result.override.violations) ? result.override.violations : []
+        setTradeRequest((prev) => (prev ? { ...prev, overrideViolations: violations } : prev))
+        toast.warning('後端判定此筆為違規覆寫', { description: '請填寫覆寫理由後再送出。' })
+        return
+      }
       if (!res.ok) throw new Error(result?.error || `HTTP ${res.status}`)
       toast.success(result.message || '已寫入交易紀錄帳本', {
         description:
@@ -225,7 +236,7 @@ export function SoxlDashboard() {
     tierNo: t.tier,
     tier: `第 ${t.tier} 批出場`,
     gain: `+${t.gainPercent}%`,
-    action: t.cumulativeSellRatio >= 1 ? '清空剩餘全部持倉' : `累計賣出達建倉量的 ${Math.round(t.cumulativeSellRatio * 3)}/3`,
+    action: t.cumulativeSellRatio >= 1 ? '清空剩餘全部持倉' : `累計賣出達建倉量的 ${Math.round(t.cumulativeSellRatio * 100)}%`,
   }))
 
   // Phase 2：實際分批間隔、持倉保護
@@ -495,7 +506,7 @@ export function SoxlDashboard() {
                   <div className={`text-[10px] ${data.cycle?.sniperActivatedAt ? 'font-bold text-emerald-400' : 'text-muted-foreground'}`}>
                     {data.cycle?.sniperActivatedAt
                       ? `狙擊期 ${data.cycle.sniperActivatedAt.slice(0, 10)} 啟動`
-                      : `距啟動（-40%）還差 ${(data.cycle?.maxDrawdownSincePeak + 40).toFixed(1)} 點`}
+                      : `距啟動（${config?.activateDrawdown ?? -40}%）還差 ${(data.cycle?.maxDrawdownSincePeak - (config?.activateDrawdown ?? -40)).toFixed(1)} 點`}
                   </div>
                 </div>
               </div>

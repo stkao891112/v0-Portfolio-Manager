@@ -160,7 +160,7 @@ describe('SOXL Sniper Strategy State Machine Tests', () => {
 
     expect(state.activeSignal.type).toBe('SELL_CANDIDATE')
     expect(state.exitAlerts.tier1Profit80).toBe(true)
-    expect(state.activeSignal.suggestedAction).toContain('建倉總量 100 股的 1/3')
+    expect(state.activeSignal.suggestedAction).toContain('建倉總量 100 股的 33%')
   })
 
   it('should trigger warning when SOXX is below 40W MA for two consecutive confirmed weeks', () => {

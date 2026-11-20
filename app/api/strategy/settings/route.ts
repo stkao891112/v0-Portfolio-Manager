@@ -37,7 +37,9 @@ export async function PUT(request: Request) {
         args: [JSON.stringify(buildSoxlStrategySettingsJson(config)), now],
       },
       {
-        sql: "UPDATE portfolio_settings SET soxl_max_position_percent = ?, updated_at = ? WHERE id = 'default'",
+        sql: `INSERT INTO portfolio_settings (id, soxl_max_position_percent, updated_at)
+              VALUES ('default', ?, ?)
+              ON CONFLICT(id) DO UPDATE SET soxl_max_position_percent = excluded.soxl_max_position_percent, updated_at = excluded.updated_at`,
         args: [config.maxPositionPercent, now],
       },
     ])
