@@ -11,6 +11,16 @@ import * as portfolioApi from '../app/api/portfolio/route'
 import * as migrateApi from '../app/api/migrate/route'
 import * as soxlApi from '../app/api/strategy/soxl/route'
 import { getExecutedTranchesSinceCyclePeak } from '../app/api/strategy/soxl/route'
+import * as strategySettingsApi from '../app/api/strategy/settings/route'
+import * as signalsApi from '../app/api/strategy/signals/route'
+import { soxlSnapshotSource } from '../lib/strategies/decision-snapshot'
+
+// 決策快照：測試不打即時行情，改用「各批皆可執行、可停利」的固定狀態
+const PERMISSIVE_STATE = {
+  tranches: [1, 2, 3, 4].map((tranche) => ({ tranche, status: 'CANDIDATE' })),
+  activeSignal: { type: 'SELL_CANDIDATE', title: '測試', reason: '測試', canExecuteBuy: true, isStaleData: false },
+}
+soxlSnapshotSource.load = async () => PERMISSIVE_STATE
 import * as categoriesApi from '../app/api/categories/route'
 
 const json = (url: string, method: string, body?: unknown) =>
@@ -257,6 +267,53 @@ describe('API 整合測試（交易帳本、設定局部更新、遷移防呆、
     const sell = await soxlApi.POST(json('/api/strategy/soxl', 'POST', { action: 'SELL', exitTier: 1, quantity: 5, price: 40 }))
     expect(sell.status).toBe(200)
     expect((await sell.json()).realizedPnl).toBeCloseTo((40 - 20) * 5, 6)
+  })
+
+  it('違規覆寫：不符合當下規則必須填理由，並存下決策快照', async () => {
+    soxlSnapshotSource.load = async () => ({
+      ...PERMISSIVE_STATE,
+      activeSignal: { ...PERMISSIVE_STATE.activeSignal, type: 'HOLD', title: '持有中' },
+    })
+    try {
+      const noReason = await soxlApi.POST(json('/api/strategy/soxl', 'POST', { action: 'SELL', quantity: 1, price: 40 }))
+      expect(noReason.status).toBe(422)
+      expect((await noReason.json()).error).toContain('覆寫理由')
+
+      const ok = await soxlApi.POST(
+        json('/api/strategy/soxl', 'POST', { action: 'SELL', quantity: 1, price: 40, overrideReason: '個人資金需求，提前部分減碼' })
+      )
+      expect(ok.status).toBe(200)
+      expect((await ok.json()).override.isOverride).toBe(true)
+      const sig = await sqlite.get<any>("SELECT * FROM strategy_signals WHERE status = 'OVERRIDDEN' ORDER BY created_at DESC LIMIT 1")
+      expect(sig.trigger_condition).toContain('個人資金需求')
+      const snap = JSON.parse(sig.indicator_values).snapshot
+      expect(snap.signal.type).toBe('HOLD')
+      expect(snap.override.reason).toBe('個人資金需求，提前部分減碼')
+    } finally {
+      soxlSnapshotSource.load = async () => PERMISSIVE_STATE
+    }
+  })
+
+  it('策略參數 API：儲存後生效並同步上限，不合法回 400，可還原預設；決策歷史可讀', async () => {
+    const bad = await strategySettingsApi.PUT(json('/api/strategy/settings', 'PUT', { config: { tranchePercent: 5, trancheCount: 4 } }))
+    expect(bad.status).toBe(400)
+
+    const put = await strategySettingsApi.PUT(json('/api/strategy/settings', 'PUT', { config: { maxPositionPercent: 8, intervalWeeks: 3 } }))
+    expect(put.status).toBe(200)
+    const got = await (await strategySettingsApi.GET()).json()
+    expect(got.config.maxPositionPercent).toBe(8)
+    expect(got.config.tranchePercent).toBe(2)
+    expect(got.config.intervalWeeks).toBe(3)
+    const ps = await sqlite.get<any>("SELECT soxl_max_position_percent AS m FROM portfolio_settings WHERE id = 'default'")
+    expect(ps.m).toBe(8)
+
+    const reset = await (await strategySettingsApi.PUT(json('/api/strategy/settings', 'PUT', { reset: true }))).json()
+    expect(reset.config.maxPositionPercent).toBe(10)
+    expect(reset.config.intervalWeeks).toBe(4)
+
+    const hist = await (await signalsApi.GET(new Request('http://localhost/api/strategy/signals?limit=5'))).json()
+    expect(hist.signals.length).toBeGreaterThan(0)
+    expect(hist.signals.some((x: any) => x.status === 'OVERRIDDEN' && x.snapshot?.override?.reason)).toBe(true)
   })
 
   it('找不到 SOXL 分類時建立正式分類（不寫入孤兒 default_cat）', async () => {

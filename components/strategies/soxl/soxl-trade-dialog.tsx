@@ -12,7 +12,8 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { AlertTriangle } from 'lucide-react'
+import { AlertTriangle, ShieldAlert } from 'lucide-react'
+import { MIN_OVERRIDE_REASON_LENGTH } from '@/lib/strategies/decision-snapshot'
 
 export interface SoxlTradeRequest {
   mode: 'BUY' | 'SELL'
@@ -20,12 +21,14 @@ export interface SoxlTradeRequest {
   exitTier?: number | null
   suggestedQuantity: number
   title: string
+  /** 違規覆寫：不符合當下規則的項目（有值時必須填理由） */
+  overrideViolations?: string[]
 }
 
 interface Props {
   request: SoxlTradeRequest | null
   onClose: () => void
-  onConfirm: (input: { quantity: number; price: number }) => Promise<void>
+  onConfirm: (input: { quantity: number; price: number; overrideReason?: string }) => Promise<void>
   soxlPrice: number
   exchangeRate: number
   holdingQuantity: number
@@ -50,11 +53,14 @@ export function SoxlTradeDialog({
   const [quantity, setQuantity] = useState('')
   const [price, setPrice] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [reason, setReason] = useState('')
+  const isOverride = (request?.overrideViolations?.length ?? 0) > 0
 
   useEffect(() => {
     if (request) {
       setQuantity(String(Math.max(0, Math.floor(request.suggestedQuantity))))
       setPrice(soxlPrice > 0 ? String(Number(soxlPrice.toFixed(4))) : '')
+      setReason('')
     }
   }, [request, soxlPrice])
 
@@ -78,13 +84,15 @@ export function SoxlTradeDialog({
     ? `賣出股數超過持有量（${holdingQuantity} 股）`
     : overCap
     ? `買進後占總資產 ${weightAfter.toFixed(2)}%，超過 ${maxPositionPercent}% 上限`
+    : isOverride && reason.trim().length < MIN_OVERRIDE_REASON_LENGTH
+    ? `違規覆寫需填寫至少 ${MIN_OVERRIDE_REASON_LENGTH} 個字的理由`
     : null
 
   const submit = async () => {
     if (error) return
     setSubmitting(true)
     try {
-      await onConfirm({ quantity: q, price: p })
+      await onConfirm({ quantity: q, price: p, overrideReason: isOverride ? reason.trim() : undefined })
     } finally {
       setSubmitting(false)
     }
@@ -168,7 +176,33 @@ export function SoxlTradeDialog({
           )}
         </div>
 
-        {error && (quantity || price) && (
+        {isOverride && (
+          <div className="space-y-2 rounded-md border border-warning/60 bg-warning/5 p-3 text-xs">
+            <p className="flex items-center gap-1.5 font-semibold text-warning">
+              <ShieldAlert className="size-3.5" />
+              違規覆寫：這筆交易不符合當下策略規則
+            </p>
+            <ul className="list-disc space-y-0.5 pl-5 text-muted-foreground">
+              {request?.overrideViolations?.map((v) => (
+                <li key={v}>{v}</li>
+              ))}
+            </ul>
+            <Label htmlFor="override-reason" className="text-xs">
+              覆寫理由（必填，至少 {MIN_OVERRIDE_REASON_LENGTH} 字，會連同決策快照存檔）
+            </Label>
+            <textarea
+              id="override-reason"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              rows={3}
+              className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              placeholder="例如：財報優於預期，判斷提前布局；或個人資金需求需減碼"
+            />
+            <p className="text-right text-[11px] text-muted-foreground tabular-nums">{reason.trim().length} 字</p>
+          </div>
+        )}
+
+        {error && (quantity || price || isOverride) && (
           <p className="flex items-center gap-1.5 text-xs text-rose-400">
             <AlertTriangle className="size-3.5" />
             {error}

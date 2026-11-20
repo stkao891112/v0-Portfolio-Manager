@@ -21,6 +21,8 @@ import {
 import { toast } from 'sonner'
 import { usePortfolioStore } from '@/lib/portfolio-store'
 import { SoxlTradeDialog, type SoxlTradeRequest } from './soxl-trade-dialog'
+import { DecisionHistory } from './decision-history'
+import { evaluateOverride } from '@/lib/strategies/decision-snapshot'
 import { SoxxWeeklyChart } from './soxx-weekly-chart'
 import { BacktestEquityChart } from './backtest-equity-chart'
 
@@ -39,6 +41,7 @@ export function SoxlDashboard() {
   const [backtestResult, setBacktestResult] = useState<any>(null)
   const [backtestLoading, setBacktestLoading] = useState(false)
   const [tradeRequest, setTradeRequest] = useState<SoxlTradeRequest | null>(null)
+  const [historyKey, setHistoryKey] = useState(0)
   const refreshPortfolio = usePortfolioStore((s) => s.refreshAll)
 
   const fetchStrategyData = async () => {
@@ -97,22 +100,46 @@ export function SoxlDashboard() {
   const trancheCount: number = config?.trancheCount ?? 4
 
   // 買進／停利賣出：開啟確認視窗（顯示預估金額、匯率、上限預覽），確認後才寫入
-  const openBuyDialog = (trancheId: number) =>
+  const openBuyDialog = (trancheId: number) => {
+    const verdict = evaluateOverride({ action: 'BUY', tranche: trancheId }, state ?? null)
     setTradeRequest({
       mode: 'BUY',
       tranche: trancheId,
       suggestedQuantity: state?.suggestedBuyQuantity ?? 0,
-      title: `確認買進：第 ${trancheId} 批（${tranchePct}%）`,
+      title: verdict.isOverride
+        ? `違規覆寫買進：第 ${trancheId} 批（${tranchePct}%）`
+        : `確認買進：第 ${trancheId} 批（${tranchePct}%）`,
+      overrideViolations: verdict.violations,
     })
-  const openSellDialog = () =>
+  }
+  const openSellDialog = () => {
+    const verdict = evaluateOverride({ action: 'SELL' }, state ?? null)
     setTradeRequest({
       mode: 'SELL',
-      exitTier: state?.exitTierReady ?? null,
+      exitTier: verdict.isOverride ? null : state?.exitTierReady ?? null,
       suggestedQuantity: state?.suggestedSellQuantity || state?.soxlHoldingQuantity || 0,
-      title: state?.exitTierReady ? `確認停利賣出：第 ${state.exitTierReady} 批` : '確認賣出 SOXL（退場）',
+      title: verdict.isOverride
+        ? '違規覆寫賣出 SOXL'
+        : state?.exitTierReady
+        ? `確認停利賣出：第 ${state.exitTierReady} 批`
+        : '確認賣出 SOXL（退場）',
+      overrideViolations: verdict.violations,
     })
+  }
+  // 下一個尚未執行的批次（覆寫買進用）
+  const nextPendingTranche = ((state?.tranches as any[]) || []).find((t) => t.status !== 'EXECUTED')?.tranche as
+    | number
+    | undefined
 
-  const handleConfirmTrade = async ({ quantity, price }: { quantity: number; price: number }) => {
+  const handleConfirmTrade = async ({
+    quantity,
+    price,
+    overrideReason,
+  }: {
+    quantity: number
+    price: number
+    overrideReason?: string
+  }) => {
     if (!tradeRequest) return
     const isBuy = tradeRequest.mode === 'BUY'
     try {
@@ -125,6 +152,7 @@ export function SoxlDashboard() {
           exitTier: isBuy ? undefined : tradeRequest.exitTier,
           quantity,
           price,
+          overrideReason,
           notes: isBuy
             ? `SOXL 策略第 ${tradeRequest.tranche} 批人工確認買進`
             : tradeRequest.exitTier
@@ -141,6 +169,7 @@ export function SoxlDashboard() {
             : undefined,
       })
       setTradeRequest(null)
+      setHistoryKey((k) => k + 1)
       await Promise.all([fetchStrategyData(), refreshPortfolio()])
     } catch (err: any) {
       toast.error(isBuy ? '買進寫入失敗' : '賣出寫入失敗', { description: err.message })
@@ -683,6 +712,17 @@ export function SoxlDashboard() {
                 )}
               </div>
             ))}
+            {nextPendingTranche !== undefined && !state?.activeSignal.canExecuteBuy && (
+              <div className="flex justify-end">
+                <button
+                  onClick={() => openBuyDialog(nextPendingTranche)}
+                  className="text-[11px] text-muted-foreground underline-offset-2 hover:text-warning hover:underline"
+                  title="不符合目前規則仍要買進：需填寫理由並存下決策快照"
+                >
+                  違規覆寫買進第 {nextPendingTranche} 批（需填理由）
+                </button>
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -732,6 +772,17 @@ export function SoxlDashboard() {
                   {state?.exitTierReady ? `停利賣出確認（第 ${state.exitTierReady} 批）` : '退場賣出確認'}
                 </Button>
               </div>
+              {!canSell && (state?.soxlHoldingQuantity ?? 0) > 0 && (
+                <div className="flex justify-end">
+                  <button
+                    onClick={openSellDialog}
+                    className="text-[11px] text-muted-foreground underline-offset-2 hover:text-warning hover:underline"
+                    title="停利／退場條件未成立仍要賣出：需填寫理由並存下決策快照"
+                  >
+                    違規覆寫賣出（需填理由）
+                  </button>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -764,6 +815,8 @@ export function SoxlDashboard() {
           </Card>
         </div>
       </div>
+
+      <DecisionHistory refreshKey={historyKey} />
 
       <SoxlTradeDialog
         request={tradeRequest}

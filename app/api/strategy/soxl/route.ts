@@ -16,6 +16,26 @@ import { getNextColor } from '@/lib/portfolio-types'
 import { v4 as uuidv4 } from 'uuid'
 import { getYahooCloses, getYahooDaily, getUsUnemployment, getTsmcMonthlyRevenue } from '@/lib/market-data/external-sources'
 import { evaluateMacro } from '@/lib/strategies/macro-check'
+import {
+  buildDecisionSnapshot,
+  evaluateOverride,
+  validateOverrideReason,
+  soxlSnapshotSource,
+  type SnapshotSourceState,
+} from '@/lib/strategies/decision-snapshot'
+
+/** 決策快照用：重算一次當下策略狀態（失敗回 null，交易將被視為覆寫） */
+async function loadCurrentSoxlState(): Promise<SnapshotSourceState | null> {
+  if (soxlSnapshotSource.load) return soxlSnapshotSource.load()
+  try {
+    const res = await GET()
+    if (!res.ok) return null
+    const data = await res.json()
+    return (data?.strategyState as SnapshotSourceState) ?? null
+  } catch {
+    return null
+  }
+}
 
 export const dynamic = 'force-dynamic'
 
@@ -373,6 +393,7 @@ export async function POST(request: Request) {
     const tranche = body.tranche == null ? null : Number(body.tranche)
     const exitTier = body.exitTier == null ? null : Number(body.exitTier)
     const notes = typeof body.notes === 'string' ? body.notes : ''
+    const overrideReason = typeof body.overrideReason === 'string' ? body.overrideReason.trim() : ''
 
     if (action !== 'BUY' && action !== 'SELL') {
       return NextResponse.json({ error: 'action 必須是 BUY 或 SELL' }, { status: 400 })
@@ -388,6 +409,15 @@ export async function POST(request: Request) {
     if (action === 'BUY' && !(tranche !== null && Number.isInteger(tranche) && tranche >= 1 && tranche <= config.trancheCount)) {
       return NextResponse.json({ error: `買進必須指定第 1～${config.trancheCount} 批` }, { status: 400 })
     }
+
+    // 決策快照＋違規覆寫判定：不符合當下規則時必須填寫理由
+    const currentState = await loadCurrentSoxlState()
+    const verdict = evaluateOverride({ action: action as 'BUY' | 'SELL', tranche }, currentState)
+    const reasonError = validateOverrideReason(verdict, overrideReason)
+    if (reasonError) {
+      return NextResponse.json({ error: reasonError, override: verdict }, { status: 422 })
+    }
+    const snapshot = buildDecisionSnapshot(currentState, verdict, overrideReason || null)
 
     const now = new Date().toISOString()
     const today = now.split('T')[0]
@@ -466,15 +496,18 @@ export async function POST(request: Request) {
         INSERT INTO strategy_signals (
           id, strategy_name, signal_type, symbol, price, indicator_values,
           trigger_condition, recommended_action, is_confirmed, status, created_at, executed_at
-        ) VALUES (?, 'SOXL_SNIPER', ?, 'SOXL', ?, ?, ?, ?, 1, 'EXECUTED', ?, ?)
+        ) VALUES (?, 'SOXL_SNIPER', ?, 'SOXL', ?, ?, ?, ?, 1, ?, ?, ?)
       `,
       args: [
         uuidv4(),
         action === 'BUY' ? 'BUY_CANDIDATE' : 'SELL_CANDIDATE',
         price,
-        JSON.stringify({ tranche, exitTier, exchangeRate, notes }),
-        notes || `人工確認 SOXL ${label}`,
+        JSON.stringify({ tranche, exitTier, exchangeRate, notes, snapshot }),
+        verdict.isOverride
+          ? `違規覆寫：${verdict.violations.join('；')}｜理由：${overrideReason}`
+          : notes || `人工確認 SOXL ${label}`,
         `以單價 $${price} ${action === 'BUY' ? '買進' : '賣出'} ${quantity} 股`,
+        verdict.isOverride ? 'OVERRIDDEN' : 'EXECUTED',
         now,
         now,
       ],
@@ -515,6 +548,7 @@ export async function POST(request: Request) {
       success: true,
       message: `成功執行 SOXL ${action === 'BUY' ? '買進' : '賣出'}（${quantity} 股 @ $${price}，匯率 ${exchangeRate}）`,
       transactionId: txId,
+      override: verdict,
       realizedPnl: result.realizedPnl,
       position: result.position,
       exchangeRate,

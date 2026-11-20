@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import { Settings, Database, ArrowRightLeft, Shield, Save, CheckCircle2, AlertTriangle, Bitcoin } from 'lucide-react'
 import { toast } from 'sonner'
 import { usePortfolioStore } from '@/lib/portfolio-store'
+import { SoxlStrategyPanel } from './soxl-strategy-panel'
 
 export function SystemSettings() {
   const [displayCurrency, setDisplayCurrency] = useState('TWD')
@@ -388,6 +389,9 @@ export function SystemSettings() {
           </Card>
         </div>
       </div>
+
+      {/* 前端調參面板：SOXL 狙擊策略參數（strategy_settings） */}
+      <SoxlStrategyPanel />
     </div>
   )
 }
