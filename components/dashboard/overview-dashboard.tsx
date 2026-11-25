@@ -30,6 +30,7 @@ import {
 import { Category, Currency } from '@/lib/portfolio-types'
 import { valuePortfolio } from '@/lib/valuation'
 import { QuoteStatus } from '@/components/quote-status'
+import { StrategyAdvisorCard } from './strategy-advisor-card'
 
 interface Decision {
   level: 'action' | 'warn' | 'ok'
@@ -131,6 +132,9 @@ export function OverviewDashboard({
 
   return (
     <div className="space-y-6">
+      {/* 個人投資規則戰情卡：市場位階 × 真實持倉 × 投資紀律 */}
+      <StrategyAdvisorCard categories={categories} exchangeRate={exchangeRate} />
+
       {/* 全域主決策橫幅：一眼看懂今日最重要的行動訊號 */}
       {(() => {
         const s = BANNER_STYLE[mainDecision.level]
